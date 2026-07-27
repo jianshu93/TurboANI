@@ -3,7 +3,7 @@
 TurboANI is a super fast ANI estimation algorithm implemented in pure Rust:
 
 - `simd-minimizers` for canonical minimizer positions and super-k-mer window coordinates.
-- `tab-hash::Tab64Twisted` for deterministic 64-bit tabulation-hashed minimizer tokens.
+- `tab-hash::Tab64Twisted` for deterministic 64-bit tabulation-hashed minimizer.
 - A cache-friendly exact L2 bottom-sketch slide mapper with local coordinate indices and a two-level bitset pivot.
 - A separate `fastani` binary with FastANI-compatible scalar Murmur3 minimizers for validation against the C++ binary.
 - `plotters` plus `svg2pdf` for single-pair PDF visualizations.
@@ -15,7 +15,7 @@ The main algorithm flow:
 3. L2: slide query-length super-windows over each L1 interval and score each placement.
 4. Keep best-hit and reference-bin reciprocal filters before averaging ANI.
 
-L2 scoring uses a new mashmap-like incremental bottom-sketch slide mapper: a query fragment's unique minimizer tokens seed the bottom-k union, and each candidate reference super-window is updated as the window slides. The active implementation uses local coordinate compression plus a summary bitset to move the bottom-k pivot with word-level operations instead of a tree lookup on every insert/delete.
+L2 scoring uses a new mashmap-like incremental bottom-sketch slide mapper: a query fragment's unique minimizer seed the bottom-k union, and each candidate reference super-window is updated as the window slides. The active implementation uses local coordinate compression plus a summary bitset to move the bottom-k pivot with word-level operations instead of a tree lookup on every insert/delete.
 
 The final Mash distance and confidence-bound calculation is cached exactly by `(sketch_size, best_shared)`, so each L2 candidate performs a table lookup rather than recomputing the same binomial-bound math.
 
@@ -83,7 +83,7 @@ FastANI compatibility mode is a separate binary that implements the original Fas
 - `--minIdentity 80`
 - `--minFraction 0.2`
 - `--tabSeed 42`
-- `--windowSize N` to override FastANI's p-value-derived minimizer window.
+- `--windowSize N` to override p-value-derived minimizer window.
 - `--ignoreTopPercent P` to ignore the most frequent minimizers during L1 lookup.
 - `--visualize pair.pdf` to write a single-pair PDF map/identity plot.
 
@@ -99,6 +99,8 @@ The implementation skips minimizer windows spanning ambiguous bases before passi
 Jain, C., Rodriguez-R, L.M., Phillippy, A.M., Konstantinidis, K.T. and Aluru, S., 2018. High throughput ANI analysis of 90K prokaryotic genomes reveals clear species boundaries. Nature communications, 9(1), p.5114.
 
 Jain, C., Dilthey, A., Koren, S., Aluru, S. and Phillippy, A.M., 2018. A fast approximate algorithm for mapping long reads to large reference databases. Journal of Computational Biology, 25(7), pp.766-779.
+
+Delcher, A.L., Phillippy, A., Carlton, J. and Salzberg, S.L., 2002. Fast algorithms for large-scale genome alignment and comparison. Nucleic acids research, 30(11), pp.2478-2483.
 
 Li, H., 2016. Minimap and miniasm: fast mapping and de novo assembly for noisy long sequences. Bioinformatics, 32(14), pp.2103-2110.
 

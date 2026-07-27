@@ -10,7 +10,9 @@ use turboani::{
 };
 
 fn main() -> Result<()> {
+    println!("\n ************** initializing logger *****************\n");
     env_logger::Builder::from_default_env().init();
+    log::info!("logger initialized from default environment");
 
     let m = Command::new("bitani")
         .version(env!("CARGO_PKG_VERSION"))
