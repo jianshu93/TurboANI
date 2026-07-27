@@ -1,0 +1,27 @@
+[package]
+name = "turboani"
+version = "0.1.2"
+edition = "2024"
+default-run = "turboani"
+license = "MIT OR Apache-2.0"
+description = "Super-fast ANI calculator with bitset rolling bottom-s sketch order statistics over winnowed minimizers"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+needletail = "0.7.3"
+plotters = "0.3.7"
+rayon = "1.11"
+simd-minimizers = "3.0.0"
+svg2pdf = "0.13.0"
+tab-hash = "0.3.0"
+num_cpus = "1"
+env_logger = "0.11"
+log = "0.4"
+
+[dev-dependencies]
+tempfile = "3.23"
+
+[[bin]]
+name = "turboani"
+path = "src/main.rs"
