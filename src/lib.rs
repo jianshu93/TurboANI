@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
-use needletail::{parse_fastx_file, Sequence};
+use needletail::{Sequence, parse_fastx_file};
 use plotters::coord::Shift;
 use plotters::prelude::*;
 use rayon::prelude::*;
@@ -37,7 +37,7 @@ impl MinimizerMode {
 }
 
 #[derive(Debug, Clone)]
-pub struct FastAniConfig {
+pub struct AniConfig {
     pub kmer_size: usize,
     pub fragment_len: usize,
     pub min_identity: f64,
@@ -49,9 +49,11 @@ pub struct FastAniConfig {
     pub tab_hash_seed: u64,
     pub minimizer_mode: MinimizerMode,
     pub chain: bool,
+    pub diag_cluster_bin: usize,
+    pub diag_cluster_band: usize,
 }
 
-impl Default for FastAniConfig {
+impl Default for AniConfig {
     fn default() -> Self {
         Self {
             kmer_size: 16,
@@ -65,11 +67,13 @@ impl Default for FastAniConfig {
             tab_hash_seed: 42,
             minimizer_mode: MinimizerMode::Simd,
             chain: false,
+            diag_cluster_bin: 1000,
+            diag_cluster_band: 500,
         }
     }
 }
 
-impl FastAniConfig {
+impl AniConfig {
     pub fn resolved_window_size(&self) -> usize {
         let window_size = self.window_size.unwrap_or_else(|| {
             recommended_window_size(
@@ -109,6 +113,8 @@ impl FastAniConfig {
             (0.0..=100.0).contains(&self.ignore_top_percent),
             "ignoreTopPercent must be in [0, 100]"
         );
+        anyhow::ensure!(self.diag_cluster_bin > 0, "diagBin must be positive");
+        anyhow::ensure!(self.diag_cluster_band > 0, "diagBand must be positive");
         let w = self.resolved_window_size();
         anyhow::ensure!(w > 0, "minimizer window size must be positive");
         anyhow::ensure!(
@@ -574,7 +580,7 @@ struct ShortMapping {
 pub fn compare_paths(
     query_paths: &[PathBuf],
     ref_paths: &[PathBuf],
-    config: &FastAniConfig,
+    config: &AniConfig,
 ) -> Result<Vec<AniResult>> {
     Ok(compare_paths_with_timing(query_paths, ref_paths, config)?.results)
 }
@@ -582,7 +588,7 @@ pub fn compare_paths(
 pub fn compare_paths_with_timing(
     query_paths: &[PathBuf],
     ref_paths: &[PathBuf],
-    config: &FastAniConfig,
+    config: &AniConfig,
 ) -> Result<RunOutput> {
     config.validate()?;
     let total_start = Instant::now();
@@ -654,7 +660,7 @@ pub fn compare_paths_with_timing(
 pub fn compare_paths_split_with_timing(
     query_paths: &[PathBuf],
     ref_paths: &[PathBuf],
-    config: &FastAniConfig,
+    config: &AniConfig,
     split_count: usize,
 ) -> Result<RunOutput> {
     config.validate()?;
@@ -938,7 +944,7 @@ pub fn write_timing_report(path: impl AsRef<Path>, report: &TimingReport) -> Res
 pub fn write_pair_visualization_pdf(
     query_path: impl AsRef<Path>,
     ref_path: impl AsRef<Path>,
-    config: &FastAniConfig,
+    config: &AniConfig,
     output_path: impl AsRef<Path>,
 ) -> Result<Vec<AniResult>> {
     config.validate()?;
@@ -1027,7 +1033,7 @@ fn visualization_points(
 fn select_best_visualization_mappings(
     mappings: &[MappingResult],
     reference: &ReferenceIndex,
-    config: &FastAniConfig,
+    config: &AniConfig,
 ) -> Vec<MappingResult> {
     #[derive(Debug, Clone, Copy)]
     struct IndexedVisualMapping {
@@ -2148,7 +2154,7 @@ fn lookup_slot(hash: HashValue, mask: usize) -> usize {
 impl ReferenceIndex {
     fn build(
         paths: &[PathBuf],
-        config: &FastAniConfig,
+        config: &AniConfig,
         window_size: usize,
         tab_hasher: &Tab64Twisted,
     ) -> Result<(Self, ReferenceTiming)> {
@@ -2253,7 +2259,7 @@ impl ReferenceIndex {
 fn read_reference_genome(
     path: &Path,
     genome_id: usize,
-    config: &FastAniConfig,
+    config: &AniConfig,
     window_size: usize,
     tab_hasher: &Tab64Twisted,
 ) -> Result<ReferenceGenomeBuild> {
@@ -2285,7 +2291,7 @@ fn read_reference_genome(
         contigs,
     })
 }
-fn read_query_file(path: &Path, config: &FastAniConfig) -> Result<QueryFileData> {
+fn read_query_file(path: &Path, config: &AniConfig) -> Result<QueryFileData> {
     let mut reader = parse_fastx_file(path)
         .with_context(|| format!("failed to open query {}", path.display()))?;
     let mut fragments = Vec::new();
@@ -2325,7 +2331,7 @@ fn read_query_file(path: &Path, config: &FastAniConfig) -> Result<QueryFileData>
 fn map_query_file(
     query: &QueryFileData,
     reference: &ReferenceIndex,
-    config: &FastAniConfig,
+    config: &AniConfig,
     window_size: usize,
     distance_cache: &DistanceTableCache,
 ) -> Result<(Vec<MappingResult>, MappingCounters)> {
@@ -2358,7 +2364,7 @@ fn map_query_file(
 fn map_fragment(
     fragment: &QueryFragment,
     reference: &ReferenceIndex,
-    config: &FastAniConfig,
+    config: &AniConfig,
     window_size: usize,
     tab_hasher: &Tab64Twisted,
     distance_cache: &DistanceTableCache,
@@ -2461,7 +2467,7 @@ struct IndexedMinimizer {
     coord_idx: usize,
 }
 
-// Maintains the classic FastANI/Mashmap bottom-k union sketch exactly as an L2
+// Maintains the classic bottom-k union sketch exactly as an L2
 // reference window slides, avoiding OPH sketch construction per placement.
 #[derive(Debug)]
 struct BitsetBottomSketchSlideMapper {
@@ -2724,23 +2730,23 @@ fn build_indexed_minimizers(
 fn do_l1_mapping(
     query: &QuerySketch,
     reference: &ReferenceIndex,
-    config: &FastAniConfig,
+    config: &AniConfig,
 ) -> (Vec<L1Candidate>, L1Stats) {
-    if config.chain {
-        return chaining::do_l1_mapping_chained(query, reference, config);
-    }
-
     if config.minimizer_mode == MinimizerMode::FastAni {
         return do_l1_mapping_fastani_exact(query, reference, config);
     }
 
-    chaining::do_l1_mapping_diagonal_clustered(query, reference, config)
+    if config.chain {
+        chaining::do_l1_mapping_diagonal_then_chained(query, reference, config)
+    } else {
+        chaining::do_l1_mapping_diagonal_then_rammap(query, reference, config)
+    }
 }
 
 fn do_l1_mapping_fastani_exact(
     query: &QuerySketch,
     reference: &ReferenceIndex,
-    config: &FastAniConfig,
+    config: &AniConfig,
 ) -> (Vec<L1Candidate>, L1Stats) {
     let mut seed_hits = Vec::new();
 
@@ -2808,7 +2814,7 @@ fn do_l2_mapping(
     query: &QuerySketch,
     candidate: L1Candidate,
     reference: &ReferenceIndex,
-    config: &FastAniConfig,
+    config: &AniConfig,
     window_size: usize,
 ) -> Result<(Option<MappingResult>, L2Stats)> {
     do_l2_mapping_bitset_exact(query, candidate, reference, config, window_size)
@@ -2818,7 +2824,7 @@ fn do_l2_mapping_bitset_exact(
     query: &QuerySketch,
     candidate: L1Candidate,
     reference: &ReferenceIndex,
-    config: &FastAniConfig,
+    config: &AniConfig,
     window_size: usize,
 ) -> Result<(Option<MappingResult>, L2Stats)> {
     let mut stats = L2Stats::default();
@@ -2963,7 +2969,7 @@ fn compute_ani_results(
     query: &QueryFileData,
     reference: &ReferenceIndex,
     mappings: Vec<MappingResult>,
-    config: &FastAniConfig,
+    config: &AniConfig,
 ) -> Vec<AniResult> {
     let mut short = mappings
         .into_iter()
@@ -3051,7 +3057,7 @@ fn compute_ani_results(
 
 fn sequence_minimizers(
     seq: &[u8],
-    config: &FastAniConfig,
+    config: &AniConfig,
     w: usize,
     seq_id: SeqId,
     tab_hasher: &Tab64Twisted,
@@ -3539,10 +3545,10 @@ mod tests {
 
     #[test]
     fn simd_window_size_resolves_to_odd_canonical_span() {
-        let default_k_config = FastAniConfig {
+        let default_k_config = AniConfig {
             min_identity: 78.0,
             minimizer_mode: MinimizerMode::Simd,
-            ..FastAniConfig::default()
+            ..AniConfig::default()
         };
         assert_eq!(
             recommended_window_size(
@@ -3561,11 +3567,11 @@ mod tests {
             1
         );
 
-        let odd_k_config = FastAniConfig {
+        let odd_k_config = AniConfig {
             kmer_size: 15,
             window_size: Some(16),
             minimizer_mode: MinimizerMode::Simd,
-            ..FastAniConfig::default()
+            ..AniConfig::default()
         };
         assert_eq!(odd_k_config.resolved_window_size(), 15);
         assert_eq!(
@@ -3573,11 +3579,11 @@ mod tests {
             1
         );
 
-        let minimum_window_config = FastAniConfig {
+        let minimum_window_config = AniConfig {
             kmer_size: 16,
             window_size: Some(1),
             minimizer_mode: MinimizerMode::Simd,
-            ..FastAniConfig::default()
+            ..AniConfig::default()
         };
         assert_eq!(minimum_window_config.resolved_window_size(), 2);
         assert_eq!(
@@ -3589,11 +3595,11 @@ mod tests {
 
     #[test]
     fn fastani_mode_does_not_adjust_window_size_for_simd() {
-        let config = FastAniConfig {
+        let config = AniConfig {
             kmer_size: 16,
             window_size: Some(17),
             minimizer_mode: MinimizerMode::FastAni,
-            ..FastAniConfig::default()
+            ..AniConfig::default()
         };
         assert_eq!(config.resolved_window_size(), 17);
     }
@@ -3607,13 +3613,13 @@ mod tests {
         fs::write(&query, format!(">q\n{}\n", seq))?;
         fs::write(&reference, format!(">r\n{}\n", seq))?;
 
-        let config = FastAniConfig {
+        let config = AniConfig {
             kmer_size: 8,
             fragment_len: 1000,
             min_identity: 70.0,
             min_fraction: 0.0,
             window_size: Some(10),
-            ..FastAniConfig::default()
+            ..AniConfig::default()
         };
 
         let results = compare_paths(&[query.clone()], &[reference.clone()], &config)?;
@@ -3632,14 +3638,14 @@ mod tests {
         fs::write(&query, format!(">q\n{}\n", seq))?;
         fs::write(&reference, format!(">r\n{}\n", seq))?;
 
-        let config = FastAniConfig {
+        let config = AniConfig {
             kmer_size: 8,
             fragment_len: 1000,
             min_identity: 70.0,
             min_fraction: 0.0,
             window_size: Some(10),
             chain: true,
-            ..FastAniConfig::default()
+            ..AniConfig::default()
         };
 
         let results = compare_paths(&[query.clone()], &[reference.clone()], &config)?;

@@ -1,14 +1,14 @@
 use crate::{
-    FastAniConfig, L1Candidate, L1Stats, Offset, QuerySketch, ReferenceIndex, SeqId,
+    AniConfig, L1Candidate, L1Stats, Offset, QuerySketch, ReferenceIndex, SeqId,
     estimate_minimum_hits_relaxed,
 };
 
-const DIAG_CLUSTER_BIN: usize = 1000;
-const DIAG_CLUSTER_BAND: usize = 500;
-const CHAIN_CANDIDATE_BAND: usize = 1000;
 const CHAIN_MIN_BOUND: i64 = 100;
 const CHAIN_RAMP_UP_FACTOR: i64 = 4;
 const CHAIN_MAX_REVISIONS: usize = 32;
+const RAMMAP_CHAIN_MAX_PREDECESSORS: usize = 96;
+const RAMMAP_CHAIN_MAX_GAP: usize = 5000;
+const RAMMAP_CHAIN_DIAG_TOLERANCE: usize = 1200;
 const INF: i64 = i64::MAX / 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,26 +22,34 @@ struct SeedAnchorHit {
 struct DiagonalClusterHit {
     seq_id: u32,
     diag_bin: i32,
+    ref_start: u32,
     query_start: u32,
-    start_est: u32,
 }
 
 impl DiagonalClusterHit {
-    fn new(seq_id: SeqId, diag_bin: isize, query_start: Offset, start_est: Offset) -> Self {
+    fn new(seq_id: SeqId, diag_bin: isize, ref_start: Offset, query_start: Offset) -> Self {
         debug_assert!(u32::try_from(seq_id).is_ok());
         debug_assert!(i32::try_from(diag_bin).is_ok());
+        debug_assert!(u32::try_from(ref_start).is_ok());
         debug_assert!(u32::try_from(query_start).is_ok());
-        debug_assert!(u32::try_from(start_est).is_ok());
         Self {
             seq_id: seq_id as u32,
             diag_bin: diag_bin as i32,
+            ref_start: ref_start as u32,
             query_start: query_start as u32,
-            start_est: start_est as u32,
         }
     }
 
     fn key(self) -> (u32, i32) {
         (self.seq_id, self.diag_bin)
+    }
+
+    fn anchor_hit(self) -> SeedAnchorHit {
+        SeedAnchorHit {
+            seq_id: self.seq_id as usize,
+            ref_start: self.ref_start as usize,
+            query_start: self.query_start as usize,
+        }
     }
 }
 
@@ -128,21 +136,6 @@ impl Anchor {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct ChainSetup {
-    candidate_band: usize,
-    min_unique_hits: usize,
-}
-
-impl ChainSetup {
-    fn new(min_unique_hits: usize) -> Self {
-        Self {
-            candidate_band: CHAIN_CANDIDATE_BAND,
-            min_unique_hits,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Event {
     pos: i64,
@@ -150,11 +143,36 @@ struct Event {
     anchor_idx: usize,
 }
 
-pub(crate) fn do_l1_mapping_diagonal_clustered(
+pub(crate) fn do_l1_mapping_diagonal_then_chained(
     query: &QuerySketch,
     reference: &ReferenceIndex,
-    config: &FastAniConfig,
+    config: &AniConfig,
 ) -> (Vec<L1Candidate>, L1Stats) {
+    do_l1_mapping_diagonal_impl(query, reference, config, DiagonalRefine::ChainX)
+}
+
+pub(crate) fn do_l1_mapping_diagonal_then_rammap(
+    query: &QuerySketch,
+    reference: &ReferenceIndex,
+    config: &AniConfig,
+) -> (Vec<L1Candidate>, L1Stats) {
+    do_l1_mapping_diagonal_impl(query, reference, config, DiagonalRefine::Rammap)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiagonalRefine {
+    ChainX,
+    Rammap,
+}
+
+fn do_l1_mapping_diagonal_impl(
+    query: &QuerySketch,
+    reference: &ReferenceIndex,
+    config: &AniConfig,
+    refine: DiagonalRefine,
+) -> (Vec<L1Candidate>, L1Stats) {
+    let diag_cluster_bin = config.diag_cluster_bin as isize;
+    let diag_cluster_band = config.diag_cluster_band;
     let min_unique_hits = estimate_minimum_hits_relaxed(
         query.unique_hashes.len(),
         config.kmer_size,
@@ -172,9 +190,9 @@ pub(crate) fn do_l1_mapping_diagonal_clustered(
                     let diagonal = wpos as isize - seed.qpos as isize;
                     hits.push(DiagonalClusterHit::new(
                         hit.seq_id(),
-                        div_floor_isize(diagonal, DIAG_CLUSTER_BIN as isize),
+                        div_floor_isize(diagonal, diag_cluster_bin),
+                        wpos,
                         seed.qpos,
-                        wpos.saturating_sub(seed.qpos),
                     ));
                 }
             }
@@ -202,92 +220,33 @@ pub(crate) fn do_l1_mapping_diagonal_clustered(
 
         let group = &mut hits[group_start..group_end];
         if scratch.has_unique_query_support(group, min_unique_hits) {
-            let start = median_start_est(group);
-            candidates.push(L1Candidate {
-                seq_id: key.0 as usize,
-                range_start: start.saturating_sub(DIAG_CLUSTER_BAND),
-                range_end: start.saturating_add(DIAG_CLUSTER_BAND),
-            });
-        }
-
-        group_start = group_end;
-    }
-
-    merge_candidates(&mut candidates);
-    (candidates, stats)
-}
-
-// Optimal chaining algorithm from: Rizzo, N., Cáceres, M. and Mäkinen, V., 2025, August. Practical colinear chaining on sequences revisited. In International Symposium on Bioinformatics Research and Applications (pp. 203-216). Singapore: Springer Nature Singapore.
-pub(crate) fn do_l1_mapping_chained(
-    query: &QuerySketch,
-    reference: &ReferenceIndex,
-    config: &FastAniConfig,
-) -> (Vec<L1Candidate>, L1Stats) {
-    let min_unique_hits = estimate_minimum_hits_relaxed(
-        query.unique_hashes.len(),
-        config.kmer_size,
-        config.min_identity,
-    )
-    .max(1);
-    let setup = ChainSetup::new(min_unique_hits);
-
-    let mut hits = Vec::new();
-    for seed in &query.unique_seeds {
-        if let Some(ref_hits) = reference.lookup.get(seed.hash) {
-            if ref_hits.len() < reference.freq_threshold {
-                hits.reserve(ref_hits.len());
-                for &hit in ref_hits {
-                    hits.push(SeedAnchorHit {
-                        seq_id: hit.seq_id(),
-                        ref_start: hit.wpos(),
-                        query_start: seed.qpos,
-                    });
+            match refine {
+                DiagonalRefine::ChainX => {
+                    append_refined_chainx_candidates(
+                        key.0 as usize,
+                        group,
+                        query,
+                        reference,
+                        min_unique_hits,
+                        config.kmer_size,
+                        diag_cluster_band,
+                        &mut candidates,
+                    );
+                }
+                DiagonalRefine::Rammap => {
+                    append_refined_rammap_candidates(
+                        key.0 as usize,
+                        group,
+                        query,
+                        reference,
+                        min_unique_hits,
+                        config.kmer_size,
+                        diag_cluster_band,
+                        &mut candidates,
+                    );
                 }
             }
         }
-    }
-
-    let stats = L1Stats {
-        seed_hits: hits.len(),
-    };
-    if hits.len() < setup.min_unique_hits {
-        return (Vec::new(), stats);
-    }
-
-    hits.sort_unstable_by_key(|hit| (hit.seq_id, hit.ref_start, hit.query_start));
-
-    let mut candidates = Vec::new();
-    let mut group_start = 0usize;
-    while group_start < hits.len() {
-        let seq_id = hits[group_start].seq_id;
-        let mut group_end = group_start + 1;
-        while group_end < hits.len() && hits[group_end].seq_id == seq_id {
-            group_end += 1;
-        }
-
-        let group = &hits[group_start..group_end];
-        if group.len() >= setup.min_unique_hits {
-            let contig_len = reference.contigs[seq_id].len;
-            let forward_chain = chainx_semiglobal_supported_hits(
-                group,
-                query.len,
-                contig_len,
-                config.kmer_size,
-                setup.min_unique_hits,
-                ChainOrientation::Forward,
-            );
-            append_chain_candidates(seq_id, &forward_chain, &setup, &mut candidates);
-
-            let reverse_chain = chainx_semiglobal_supported_hits(
-                group,
-                query.len,
-                contig_len,
-                config.kmer_size,
-                setup.min_unique_hits,
-                ChainOrientation::Reverse,
-            );
-            append_chain_candidates(seq_id, &reverse_chain, &setup, &mut candidates);
-        }
 
         group_start = group_end;
     }
@@ -296,13 +255,14 @@ pub(crate) fn do_l1_mapping_chained(
     (candidates, stats)
 }
 
-fn append_chain_candidates(
+fn append_chain_candidates_with_band(
     seq_id: SeqId,
     chain: &[AnchorHit],
-    setup: &ChainSetup,
+    min_unique_hits: usize,
+    candidate_band: usize,
     candidates: &mut Vec<L1Candidate>,
 ) {
-    if unique_query_positions(chain) < setup.min_unique_hits {
+    if unique_query_positions(chain) < min_unique_hits {
         return;
     }
 
@@ -316,10 +276,116 @@ fn append_chain_candidates(
     for start in starts {
         candidates.push(L1Candidate {
             seq_id,
-            range_start: start.saturating_sub(setup.candidate_band),
-            range_end: start.saturating_add(setup.candidate_band),
+            range_start: start.saturating_sub(candidate_band),
+            range_end: start.saturating_add(candidate_band),
         });
     }
+}
+
+fn append_refined_chainx_candidates(
+    seq_id: SeqId,
+    group: &[DiagonalClusterHit],
+    query: &QuerySketch,
+    reference: &ReferenceIndex,
+    min_unique_hits: usize,
+    anchor_len: usize,
+    candidate_band: usize,
+    candidates: &mut Vec<L1Candidate>,
+) {
+    let anchors = group
+        .iter()
+        .copied()
+        .map(DiagonalClusterHit::anchor_hit)
+        .collect::<Vec<_>>();
+    if anchors.len() < min_unique_hits {
+        return;
+    }
+
+    let contig_len = reference.contigs[seq_id].len;
+    let forward_chain = chainx_semiglobal_supported_hits(
+        &anchors,
+        query.len,
+        contig_len,
+        anchor_len,
+        min_unique_hits,
+        ChainOrientation::Forward,
+    );
+    append_chain_candidates_with_band(
+        seq_id,
+        &forward_chain,
+        min_unique_hits,
+        candidate_band,
+        candidates,
+    );
+
+    let reverse_chain = chainx_semiglobal_supported_hits(
+        &anchors,
+        query.len,
+        contig_len,
+        anchor_len,
+        min_unique_hits,
+        ChainOrientation::Reverse,
+    );
+    append_chain_candidates_with_band(
+        seq_id,
+        &reverse_chain,
+        min_unique_hits,
+        candidate_band,
+        candidates,
+    );
+}
+
+fn append_refined_rammap_candidates(
+    seq_id: SeqId,
+    group: &[DiagonalClusterHit],
+    query: &QuerySketch,
+    reference: &ReferenceIndex,
+    min_unique_hits: usize,
+    anchor_len: usize,
+    candidate_band: usize,
+    candidates: &mut Vec<L1Candidate>,
+) {
+    let anchors = group
+        .iter()
+        .copied()
+        .map(DiagonalClusterHit::anchor_hit)
+        .collect::<Vec<_>>();
+    if anchors.len() < min_unique_hits {
+        return;
+    }
+
+    let contig_len = reference.contigs[seq_id].len;
+    let forward_chain = rammap_style_supported_hits(
+        &anchors,
+        query.len,
+        contig_len,
+        anchor_len,
+        min_unique_hits,
+        ChainOrientation::Forward,
+    );
+    append_chain_candidates_with_band(
+        seq_id,
+        &forward_chain,
+        min_unique_hits,
+        candidate_band,
+        candidates,
+    );
+
+    let reverse_chain = rammap_style_supported_hits(
+        &anchors,
+        query.len,
+        contig_len,
+        anchor_len,
+        min_unique_hits,
+        ChainOrientation::Reverse,
+    );
+    append_chain_candidates_with_band(
+        seq_id,
+        &reverse_chain,
+        min_unique_hits,
+        candidate_band,
+        candidates,
+    );
 }
 
 fn unique_query_positions(chain: &[AnchorHit]) -> usize {
@@ -329,10 +395,111 @@ fn unique_query_positions(chain: &[AnchorHit]) -> usize {
     positions.len()
 }
 
-fn median_start_est(group: &mut [DiagonalClusterHit]) -> Offset {
-    let mid = group.len() / 2;
-    let (_, median, _) = group.select_nth_unstable_by_key(mid, |hit| hit.start_est);
-    median.start_est as usize
+fn rammap_style_supported_hits(
+    hits: &[SeedAnchorHit],
+    query_len: usize,
+    _ref_len: usize,
+    anchor_len: usize,
+    min_chain_hits: usize,
+    orientation: ChainOrientation,
+) -> Vec<AnchorHit> {
+    if hits.len() < min_chain_hits {
+        return Vec::new();
+    }
+
+    let mut anchors = hits
+        .iter()
+        .map(|hit| AnchorHit {
+            ref_start: hit.ref_start,
+            query_start: oriented_query_start(hit.query_start, query_len, anchor_len, orientation),
+        })
+        .collect::<Vec<_>>();
+    anchors.sort_unstable_by_key(|hit| (hit.ref_start, hit.query_start));
+    anchors.dedup();
+
+    if anchors.len() < min_chain_hits {
+        return Vec::new();
+    }
+
+    let max_gap = RAMMAP_CHAIN_MAX_GAP.max(query_len + anchor_len);
+    let diag_tolerance = RAMMAP_CHAIN_DIAG_TOLERANCE.max(anchor_len * 8);
+    let mut scores = vec![1i32; anchors.len()];
+    let mut chain_lens = vec![1usize; anchors.len()];
+    let mut predecessors = vec![None; anchors.len()];
+    let mut best_idx = 0usize;
+
+    for i in 0..anchors.len() {
+        let curr = anchors[i];
+        let mut checked = 0usize;
+        let mut skipped = 0usize;
+
+        for j in (0..i).rev() {
+            checked += 1;
+            if checked > RAMMAP_CHAIN_MAX_PREDECESSORS {
+                break;
+            }
+
+            let prev = anchors[j];
+            if curr.ref_start <= prev.ref_start {
+                continue;
+            }
+            let dr = curr.ref_start - prev.ref_start;
+            if dr > max_gap {
+                break;
+            }
+            if curr.query_start <= prev.query_start {
+                continue;
+            }
+            let dq = curr.query_start - prev.query_start;
+            if dq > max_gap {
+                continue;
+            }
+
+            let diag_delta = dr.abs_diff(dq);
+            if diag_delta > diag_tolerance {
+                skipped += 1;
+                if skipped > 25 {
+                    break;
+                }
+                continue;
+            }
+
+            let gap_penalty = (diag_delta / 256 + dr.max(dq) / 4096) as i32;
+            let candidate_score = scores[j] + 1 - gap_penalty;
+            let candidate_len = chain_lens[j] + 1;
+            if candidate_score > scores[i]
+                || (candidate_score == scores[i] && candidate_len > chain_lens[i])
+            {
+                scores[i] = candidate_score;
+                chain_lens[i] = candidate_len;
+                predecessors[i] = Some(j);
+            }
+        }
+
+        if chain_lens[i] > chain_lens[best_idx]
+            || (chain_lens[i] == chain_lens[best_idx] && scores[i] > scores[best_idx])
+        {
+            best_idx = i;
+        }
+    }
+
+    if chain_lens[best_idx] < min_chain_hits {
+        return Vec::new();
+    }
+
+    let mut chain = Vec::with_capacity(chain_lens[best_idx]);
+    let mut current = Some(best_idx);
+    let mut guard = 0usize;
+    while let Some(idx) = current {
+        chain.push(anchors[idx]);
+        current = predecessors[idx];
+        guard += 1;
+        if guard > anchors.len() {
+            return Vec::new();
+        }
+    }
+    chain.reverse();
+    chain
 }
 
 fn chainx_semiglobal_supported_hits(
@@ -857,12 +1024,8 @@ mod tests {
 
     #[test]
     fn chain_candidates_require_enough_unique_query_positions() {
-        let setup = ChainSetup {
-            candidate_band: CHAIN_CANDIDATE_BAND,
-            min_unique_hits: 3,
-        };
         let mut candidates = Vec::new();
-        append_chain_candidates(
+        append_chain_candidates_with_band(
             0,
             &[
                 AnchorHit {
@@ -874,12 +1037,13 @@ mod tests {
                     query_start: 10,
                 },
             ],
-            &setup,
+            3,
+            1000,
             &mut candidates,
         );
         assert!(candidates.is_empty());
 
-        append_chain_candidates(
+        append_chain_candidates_with_band(
             0,
             &[
                 AnchorHit {
@@ -895,7 +1059,8 @@ mod tests {
                     query_start: 40,
                 },
             ],
-            &setup,
+            3,
+            1000,
             &mut candidates,
         );
         assert_eq!(candidates.len(), 1);
@@ -926,19 +1091,6 @@ mod tests {
         assert_eq!(std::mem::size_of::<DiagonalClusterHit>(), 16);
     }
 
-    #[test]
-    fn diagonal_cluster_median_uses_selection() {
-        let mut group = vec![
-            diagonal_hit(0, 500),
-            diagonal_hit(10, 110),
-            diagonal_hit(25, 125),
-            diagonal_hit(30, 430),
-            diagonal_hit(40, 140),
-        ];
-
-        assert_eq!(median_start_est(&mut group), 100);
-    }
-
     fn hit(ref_start: Offset, query_start: Offset) -> SeedAnchorHit {
         SeedAnchorHit {
             seq_id: 0,
@@ -948,6 +1100,6 @@ mod tests {
     }
 
     fn diagonal_hit(query_start: Offset, ref_start: Offset) -> DiagonalClusterHit {
-        DiagonalClusterHit::new(0, 0, query_start, ref_start.saturating_sub(query_start))
+        DiagonalClusterHit::new(0, 0, ref_start, query_start)
     }
 }

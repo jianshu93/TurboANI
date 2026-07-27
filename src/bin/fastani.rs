@@ -3,7 +3,7 @@ use std::{env, path::PathBuf};
 use anyhow::Result;
 use clap::{Arg, ArgAction, ArgGroup, Command};
 use turboani::{
-    FastAniConfig, MinimizerMode, TimingReport, compare_paths_with_timing, format_timing_summary,
+    AniConfig, MinimizerMode, TimingReport, compare_paths_with_timing, format_timing_summary,
     read_path_list, write_pair_visualization_pdf, write_phylip_matrix, write_results,
 };
 
@@ -43,7 +43,7 @@ fn main() -> Result<()> {
         anyhow::bail!("--visualize only supports a single -q query and a single -r reference");
     }
 
-    let config = FastAniConfig {
+    let config = AniConfig {
         kmer_size: cli.kmer_size,
         fragment_len: cli.fragment_len,
         min_identity: cli.min_identity,
@@ -55,6 +55,8 @@ fn main() -> Result<()> {
         tab_hash_seed: 42,
         minimizer_mode: MinimizerMode::FastAni,
         chain: false,
+        diag_cluster_bin: 1000,
+        diag_cluster_band: 500,
     };
 
     let run = compare_paths_with_timing(&query_paths, &ref_paths, &config)?;
@@ -178,7 +180,7 @@ fn parse_cli() -> Cli {
         .arg(
             Arg::new("matrix")
                 .long("matrix")
-                .help("Also write a FastANI-style lower-triangular matrix to <output>.matrix; reciprocal ANI values are averaged")
+                .help("Also write a Phylip lower-triangular matrix to <output>.matrix; reciprocal ANI values are averaged")
                 .action(ArgAction::SetTrue),
         )
         .arg(

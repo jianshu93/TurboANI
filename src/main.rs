@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, ArgGroup, Command};
 use log::info;
 use turboani::{
-    FastAniConfig, MinimizerMode, TimingReport, compare_paths_split_with_timing,
+    AniConfig, MinimizerMode, TimingReport, compare_paths_split_with_timing,
     compare_paths_with_timing, format_timing_summary, read_path_list, write_pair_visualization_pdf,
     write_phylip_matrix, write_results,
 };
@@ -17,7 +17,7 @@ fn main() -> Result<()> {
     let m = Command::new("turboani")
         .version(env!("CARGO_PKG_VERSION"))
         .about(
-            "Super-fast ANI with SIMD minimizers, tabulation hashing, compact lookup indexing, \
+            "Super-fast ANI with SIMD minimizers, tabulation hashing, compact lookup indexing, efficient candidate window screening \
              and bitset rolling bottom-s sketch order statistics over winnowed minimizers",
         )
         .arg(
@@ -146,19 +146,34 @@ fn main() -> Result<()> {
                 .value_parser(clap::value_parser!(u64)),
         )
         .arg(
-            Arg::new("chaining")
-                .long("chaining")
+            Arg::new("diag-bin")
+                .long("diagBin")
+                .help("Diagonal clustering bin width in bases")
+                .value_name("BASES")
+                .default_value("1000")
+                .value_parser(clap::value_parser!(usize)),
+        )
+        .arg(
+            Arg::new("diag-band")
+                .long("diagBand")
+                .help("Candidate reference half-band emitted by diagonal clustering")
+                .value_name("BASES")
+                .default_value("500")
+                .value_parser(clap::value_parser!(usize)),
+        )
+        .arg(
+            Arg::new("chainx")
+                .long("chainX")
                 .help(
-                    "Use optimal ChainX semiglobal colinear chaining over minimizer anchors for \
-                     L1 candidate screening; the default is diagonal clustering",
-                )
+                    "Use optimal ChainX refinement after diagonal clustering for L1 candidate \
+                     screening; the default is minimap2 chaining")
                 .action(ArgAction::SetTrue),
         )
         .arg(
             Arg::new("matrix")
                 .long("matrix")
                 .help(
-                    "Also write a FastANI-style lower-triangular matrix to <output>.matrix; \
+                    "Also write a Phylip lower-triangular matrix to <output>.matrix; \
                      reciprocal ANI values are averaged",
                 )
                 .action(ArgAction::SetTrue),
@@ -204,7 +219,9 @@ fn main() -> Result<()> {
     let window_size = m.get_one::<usize>("window-size").copied();
     let ignore_top_percent = *m.get_one::<f64>("ignore-top-percent").unwrap();
     let tab_seed = *m.get_one::<u64>("tab-seed").unwrap();
-    let chaining = m.get_flag("chaining");
+    let chainx = m.get_flag("chainx");
+    let diag_cluster_bin = *m.get_one::<usize>("diag-bin").unwrap();
+    let diag_cluster_band = *m.get_one::<usize>("diag-band").unwrap();
     let matrix = m.get_flag("matrix");
     let visualize_path = m.get_one::<PathBuf>("visualize");
     let split_count = m.get_one::<usize>("split").copied();
@@ -228,7 +245,7 @@ fn main() -> Result<()> {
         anyhow::bail!("--visualize only supports a single -q query and a single -r reference");
     }
 
-    let config = FastAniConfig {
+    let config = AniConfig {
         kmer_size,
         fragment_len,
         min_identity,
@@ -239,7 +256,9 @@ fn main() -> Result<()> {
         ignore_top_percent,
         tab_hash_seed: tab_seed,
         minimizer_mode: MinimizerMode::Simd,
-        chain: chaining,
+        chain: chainx,
+        diag_cluster_bin,
+        diag_cluster_band,
     };
 
     let run = if let Some(split_count) = split_count {
