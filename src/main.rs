@@ -14,7 +14,7 @@ fn main() -> Result<()> {
     env_logger::Builder::from_default_env().init();
     log::info!("logger initialized from default environment");
 
-    let m = Command::new("bitani")
+    let m = Command::new("turboani")
         .version(env!("CARGO_PKG_VERSION"))
         .about(
             "Super-fast ANI with SIMD minimizers, tabulation hashing, compact lookup indexing, \

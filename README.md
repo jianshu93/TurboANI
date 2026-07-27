@@ -19,7 +19,7 @@ L2 scoring uses a new mashmap-like incremental bottom-sketch slide mapper: a que
 
 The final Mash distance and confidence-bound calculation is cached exactly by `(sketch_size, best_shared)`, so each L2 candidate performs a table lookup rather than recomputing the same binomial-bound math.
 
-`simd-minimizers` uses ntHash internally with SIMD to choose minimizer positions. The turboani binary takes the returned canonical minimizer k-mer value and applies `Tab64Twisted` tabulation hashing once. That token is reused for L1 lookup and exact L2 bottom-sketch comparison. The tabulation table is deterministic by default and controlled by `--tabSeed`.
+`simd-minimizers` uses ntHash internally with SIMD to choose minimizer positions. The turboani binary takes the returned canonical minimizer k-mer value and applies `Tab64Twisted` tabulation hashing once. That minimizer is reused for L1 lookup and exact L2 bottom-sketch comparison. The tabulation table is deterministic by default and controlled by `--tabSeed`.
 
 ## Build and run
 
