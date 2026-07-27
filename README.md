@@ -4,6 +4,7 @@ TurboANI is a super fast ANI estimation algorithm implemented in pure Rust:
 
 - `simd-minimizers` for canonical minimizer positions and super-k-mer window coordinates.
 - `tab-hash::Tab64Twisted` for deterministic 64-bit tabulation-hashed minimizer.
+- A MUMer-style diagonal clustering followed by minimap2 chaining for L1 candidate window screening.
 - A cache-friendly exact L2 bottom-sketch slide mapper with local coordinate indices and a two-level bitset pivot.
 - A separate `fastani` binary with FastANI-compatible scalar Murmur3 minimizers for validation against the C++ binary.
 - `plotters` plus `svg2pdf` for single-pair PDF visualizations.
@@ -11,7 +12,7 @@ TurboANI is a super fast ANI estimation algorithm implemented in pure Rust:
 The main algorithm flow:
 
 1. Build a reference minimizer lookup.
-2. L1: cluster query-fragment minimizer seed hits into candidate reference intervals (via diagnoal clustering or the slower optimal ChainX co-linear chaining).
+2. L1: cluster query-fragment minimizer seed hits into candidate reference intervals (via diagnoal clustering followed by minimap2 chaining or the slower optimal ChainX co-linear chaining).
 3. L2: slide query-length super-windows over each L1 interval and score each placement.
 4. Keep best-hit and reference-bin reciprocal filters before averaging ANI.
 
