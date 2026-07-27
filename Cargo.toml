@@ -3,8 +3,10 @@ name = "turboani"
 version = "0.1.3"
 edition = "2024"
 default-run = "turboani"
-license = "MIT OR Apache-2.0"
+repository = "https://github.com/jianshu93/TurboANI.git"
+license = "MIT"
 description = "Super-fast ANI calculator with bitset rolling bottom-s sketch order statistics over winnowed minimizers"
+keywords = ["ANI", "minimizers", "mapping", "MinHash", "alignment"]
 
 [dependencies]
 anyhow = "1.0"
