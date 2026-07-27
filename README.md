@@ -44,7 +44,9 @@ Single-pair visualization writes a PDF with a query/reference map and fragment i
 
 This it the plot.
 
-![Alt!](https://github.com/jianshu93/TurboANI/blob/master/Figures.jpg?raw=true)
+<div align="center">
+  <img width="75%" src ="Figures.jpg">
+</div>
 
 
 ### Many comparsions
@@ -97,3 +99,5 @@ The implementation skips minimizer windows spanning ambiguous bases before passi
 Jain, C., Rodriguez-R, L.M., Phillippy, A.M., Konstantinidis, K.T. and Aluru, S., 2018. High throughput ANI analysis of 90K prokaryotic genomes reveals clear species boundaries. Nature communications, 9(1), p.5114.
 
 Jain, C., Dilthey, A., Koren, S., Aluru, S. and Phillippy, A.M., 2018. A fast approximate algorithm for mapping long reads to large reference databases. Journal of Computational Biology, 25(7), pp.766-779.
+
+Marchini, S. and Vigna, S., 2020. Compact Fenwick trees for dynamic ranking and selection. Software: Practice and Experience, 50(7), pp.1184-1202.
