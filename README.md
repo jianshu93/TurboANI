@@ -6,7 +6,6 @@ TurboANI is a super fast ANI estimation algorithm implemented in pure Rust:
 - `tab-hash::Tab64Twisted` for deterministic 64-bit tabulation-hashed minimizer.
 - A MUMer-style diagonal clustering followed by minimap2 chaining for L1 candidate window screening.
 - A cache-friendly exact L2 bottom-sketch slide mapper with local coordinate indices and a two-level bitset pivot.
-- A separate `fastani` binary with FastANI-compatible scalar Murmur3 minimizers for validation against the C++ binary.
 - `plotters` plus `svg2pdf` for single-pair PDF visualizations.
 
 The main algorithm flow:
@@ -46,7 +45,7 @@ Single-pair visualization writes a PDF with a query/reference map and fragment i
 This it the plot.
 
 <div align="center">
-  <img width="75%" src ="Figures.jpg">
+  <img width="100%" src ="Figures.jpg">
 </div>
 
 
