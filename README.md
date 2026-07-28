@@ -15,6 +15,7 @@ The main algorithm flow:
 3. L2: slide query-length super-windows over each L1 interval and score each placement.
 4. Keep best-hit and reference-bin reciprocal filters before averaging ANI.
 5. The split mode allows query mapping to a small subset of references to reduce RAM. 
+
 L2 scoring uses a new mashmap-like incremental bottom-sketch slide mapper: a query fragment's unique minimizer seed the bottom-k union, and each candidate reference super-window is updated as the window slides. The active implementation uses local coordinate compression plus a summary bitset to move the bottom-k pivot with word-level operations instead of a tree lookup on every insert/delete.
 
 The final Mash distance and confidence-bound calculation is cached exactly by `(sketch_size, best_shared)`, so each L2 candidate performs a table lookup rather than recomputing the same binomial-bound math.
