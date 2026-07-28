@@ -2,19 +2,19 @@
 
 TurboANI is a super fast ANI estimation algorithm implemented in pure Rust:
 
-- `simd-minimizers` for canonical minimizer positions and super-k-mer window coordinates.
-- `tab-hash::Tab64Twisted` for deterministic 64-bit tabulation-hashed minimizer.
-- A MUMer-style diagonal clustering followed by minimap2 chaining for L1 candidate window screening.
+- `simd-minimizers` for canonical minimizer positions and super-k-mer window coordinates. Note that the super-k-mer windows and corresponding minimizer positions were retained. 
+- `tab-hash::Tab64Twisted` for deterministic 64-bit tabulation-hashed minimizer. This step is a rehash to obtain true pseudo-randomness via twisted tabulation hashing. 
+- A MUMmer-style diagonal clustering followed by minimap2-style fast chaining for L1 candidate window screening.
 - A cache-friendly exact L2 bottom-sketch slide mapper with local coordinate indices and a two-level bitset pivot.
 - `plotters` plus `svg2pdf` for single-pair PDF visualizations.
 
 The main algorithm flow:
 
 1. Build a reference minimizer lookup.
-2. L1: cluster query-fragment minimizer seed hits into candidate reference intervals (via diagnoal clustering followed by minimap2 chaining or the slower optimal ChainX co-linear chaining).
+2. L1: cluster query-fragment minimizer seed hits into candidate reference intervals (via diagnoal clustering followed by minimap2 chaining or the much slower optimal ChainX co-linear chaining).
 3. L2: slide query-length super-windows over each L1 interval and score each placement.
 4. Keep best-hit and reference-bin reciprocal filters before averaging ANI.
-
+5. The split mode allows query mapping to a small subset of references to reduce RAM. 
 L2 scoring uses a new mashmap-like incremental bottom-sketch slide mapper: a query fragment's unique minimizer seed the bottom-k union, and each candidate reference super-window is updated as the window slides. The active implementation uses local coordinate compression plus a summary bitset to move the bottom-k pivot with word-level operations instead of a tree lookup on every insert/delete.
 
 The final Mash distance and confidence-bound calculation is cached exactly by `(sketch_size, best_shared)`, so each L2 candidate performs a table lookup rather than recomputing the same binomial-bound math.
