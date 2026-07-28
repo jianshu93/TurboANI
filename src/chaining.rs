@@ -1,7 +1,6 @@
-use crate::{
-    AniConfig, L1Candidate, L1Stats, Offset, QuerySketch, ReferenceIndex, SeqId,
-    estimate_minimum_hits_relaxed,
-};
+use crate::candidate_window::{L1Candidate, L1Stats};
+use crate::compute_identity::estimate_minimum_hits_relaxed;
+use crate::{AniConfig, Offset, QuerySketch, ReferenceIndex, SeqId};
 
 const CHAIN_MIN_BOUND: i64 = 100;
 const CHAIN_RAMP_UP_FACTOR: i64 = 4;
