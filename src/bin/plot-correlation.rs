@@ -19,6 +19,12 @@ struct Cli {
     summary_tsv: PathBuf,
     #[arg(long)]
     joined_tsv: PathBuf,
+    #[arg(
+        long,
+        alias = "averagePairs",
+        help = "Average reciprocal A->B and B->A ANI rows before joining tables"
+    )]
+    average_pairs: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -55,13 +61,24 @@ struct Summary {
     max_fastani: f64,
     min_rust: f64,
     max_rust: f64,
+    average_pairs: bool,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let fastani = read_ani_table(&cli.fastani)?;
     let rust = read_ani_table(&cli.rust)?;
-    let (joined, summary) = join_and_summarize(&fastani, &rust)?;
+    let fastani = if cli.average_pairs {
+        average_reciprocal_pairs(fastani)
+    } else {
+        fastani
+    };
+    let rust = if cli.average_pairs {
+        average_reciprocal_pairs(rust)
+    } else {
+        rust
+    };
+    let (joined, summary) = join_and_summarize(&fastani, &rust, cli.average_pairs)?;
     write_joined(&cli.joined_tsv, &joined)?;
     write_summary(&cli.summary_tsv, &summary)?;
     draw_plot(&cli.output_pdf, &joined, &summary)?;
@@ -104,9 +121,44 @@ fn read_ani_table(path: &Path) -> Result<HashMap<(String, String), AniRow>> {
     Ok(rows)
 }
 
+fn average_reciprocal_pairs(
+    rows: HashMap<(String, String), AniRow>,
+) -> HashMap<(String, String), AniRow> {
+    let mut sums = HashMap::<(String, String), (f64, usize)>::new();
+    for row in rows.into_values() {
+        let key = unordered_pair_key(&row.query, &row.reference);
+        let entry = sums.entry(key).or_insert((0.0, 0));
+        entry.0 += row.ani;
+        entry.1 += 1;
+    }
+
+    sums.into_iter()
+        .map(|((query, reference), (sum, count))| {
+            let ani = sum / count as f64;
+            (
+                (query.clone(), reference.clone()),
+                AniRow {
+                    query,
+                    reference,
+                    ani,
+                },
+            )
+        })
+        .collect()
+}
+
+fn unordered_pair_key(query: &str, reference: &str) -> (String, String) {
+    if query <= reference {
+        (query.to_string(), reference.to_string())
+    } else {
+        (reference.to_string(), query.to_string())
+    }
+}
+
 fn join_and_summarize(
     fastani: &HashMap<(String, String), AniRow>,
     rust: &HashMap<(String, String), AniRow>,
+    average_pairs: bool,
 ) -> Result<(Vec<JoinedPair>, Summary)> {
     let mut joined = Vec::new();
     for (key, fast_row) in fastani {
@@ -170,6 +222,7 @@ fn join_and_summarize(
             .iter()
             .copied()
             .fold(f64::NEG_INFINITY, f64::max),
+        average_pairs,
     };
     Ok((joined, summary))
 }
@@ -206,6 +259,7 @@ fn write_summary(path: &Path, summary: &Summary) -> Result<()> {
     writeln!(out, "metric\tvalue")?;
     writeln!(out, "fastani_rows\t{}", summary.fastani_rows)?;
     writeln!(out, "rust_rows\t{}", summary.rust_rows)?;
+    writeln!(out, "average_pairs\t{}", summary.average_pairs)?;
     writeln!(out, "common_pairs\t{}", summary.common_pairs)?;
     writeln!(out, "fastani_only\t{}", summary.fastani_only)?;
     writeln!(out, "rust_only\t{}", summary.rust_only)?;
@@ -239,8 +293,15 @@ fn draw_plot(output_pdf: &Path, joined: &[JoinedPair], summary: &Summary) -> Res
         let mut chart = ChartBuilder::on(&plot_area)
             .caption(
                 format!(
-                    "Streptomycetaceae 60-genome ANI correlation: n={}, Pearson={:.5}, Spearman={:.5}",
-                    summary.common_pairs, summary.pearson, summary.spearman
+                    "ANI correlation{}: n={}, Pearson={:.5}, Spearman={:.5}",
+                    if summary.average_pairs {
+                        " (reciprocal averaged)"
+                    } else {
+                        ""
+                    },
+                    summary.common_pairs,
+                    summary.pearson,
+                    summary.spearman
                 ),
                 ("sans-serif", 20),
             )
@@ -438,4 +499,48 @@ fn ranks(values: &[f64]) -> Vec<f64> {
         }
     }
     ranks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ani_row(query: &str, reference: &str, ani: f64) -> AniRow {
+        AniRow {
+            query: query.to_string(),
+            reference: reference.to_string(),
+            ani,
+        }
+    }
+
+    #[test]
+    fn average_reciprocal_pairs_collapses_directional_rows() {
+        let mut rows = HashMap::new();
+        rows.insert(
+            ("B.fa".to_string(), "A.fa".to_string()),
+            ani_row("B.fa", "A.fa", 98.0),
+        );
+        rows.insert(
+            ("A.fa".to_string(), "B.fa".to_string()),
+            ani_row("A.fa", "B.fa", 96.0),
+        );
+        rows.insert(
+            ("A.fa".to_string(), "A.fa".to_string()),
+            ani_row("A.fa", "A.fa", 100.0),
+        );
+
+        let averaged = average_reciprocal_pairs(rows);
+
+        assert_eq!(averaged.len(), 2);
+        let ab = averaged
+            .get(&("A.fa".to_string(), "B.fa".to_string()))
+            .unwrap();
+        assert_eq!(ab.query, "A.fa");
+        assert_eq!(ab.reference, "B.fa");
+        assert_eq!(ab.ani, 97.0);
+        let aa = averaged
+            .get(&("A.fa".to_string(), "A.fa".to_string()))
+            .unwrap();
+        assert_eq!(aa.ani, 100.0);
+    }
 }
