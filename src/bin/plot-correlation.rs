@@ -340,7 +340,7 @@ fn draw_plot(output_pdf: &Path, joined: &[JoinedPair], summary: &Summary) -> Res
                     summary.mean_abs_delta, summary.median_abs_delta, summary.max_abs_delta
                 ),
                 (min_axis + 0.4, max_axis - 0.9),
-                ("sans-serif", 15).into_font(),
+                ("sans-serif", 24).into_font(),
             )])
             .map_err(|e| anyhow::anyhow!("failed to draw chart annotation: {e:?}"))?;
 
