@@ -344,7 +344,7 @@ fn do_l2_mapping_bitset_exact(
         candidate.seq_id,
         candidate.range_end.saturating_add(query.len),
     );
-    let coord_end_abs = last_end_abs.saturating_add(1).min(contig_range.end);
+    let coord_end_abs = last_end_abs.min(contig_range.end);
     if coord_end_abs <= sw_beg_abs {
         return Ok((None, stats));
     }
@@ -367,12 +367,21 @@ fn do_l2_mapping_bitset_exact(
 
     let mut slide_map = BitsetBottomSketchSlideMapper::new(&query.unique_hashes, &coords);
     slide_map.insert_ref_range(&local_minimizers[sw_beg..sw_end.min(local_minimizers.len())]);
+    let mut prev_beg = sw_beg;
+    let mut prev_end = sw_end;
 
     let mut best_shared = 0usize;
     let mut first_best_pos: Option<Offset> = None;
     let mut last_best_pos: Option<Offset> = None;
 
-    while sw_beg < local_minimizers.len() && sw_beg < last_end && sw_pos <= candidate.range_end {
+    while sw_end < last_end && sw_beg < local_minimizers.len() && sw_pos <= candidate.range_end {
+        if prev_beg != sw_beg {
+            slide_map.delete_ref(local_minimizers[prev_beg].coord_idx);
+        }
+        if prev_end != sw_end {
+            slide_map.insert_ref(local_minimizers[prev_end].coord_idx);
+        }
+
         stats.windows += 1;
         sw_end = sw_end.min(local_minimizers.len());
         let shared = slide_map.shared();
@@ -402,12 +411,12 @@ fn do_l2_mapping_bitset_exact(
             break;
         }
 
+        prev_beg = sw_beg;
+        prev_end = sw_end;
         if advance_by == next_beg_delta {
-            slide_map.delete_ref(local_minimizers[sw_beg].coord_idx);
             sw_beg += 1;
         }
-        if advance_by == next_end_delta && sw_end < local_minimizers.len() {
-            slide_map.insert_ref(local_minimizers[sw_end].coord_idx);
+        if advance_by == next_end_delta {
             sw_end += 1;
         }
         sw_pos += advance_by;

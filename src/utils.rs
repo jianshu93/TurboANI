@@ -1552,6 +1552,70 @@ mod tests {
         assert_eq!(mapper.shared(), 0);
     }
 
+    #[test]
+    fn l2_does_not_score_window_after_exclusive_end() -> Result<()> {
+        let query = QuerySketch {
+            fragment_id: 0,
+            len: 10,
+            unique_hashes: vec![10, 20, 30],
+            unique_seeds: Vec::new(),
+            distance_table: Arc::from(build_distance_table(3, 1)),
+        };
+        let reference = ReferenceIndex {
+            genomes: vec![GenomeInfo {
+                path: PathBuf::from("ref.fa"),
+                length: 100,
+            }],
+            contigs: vec![ContigInfo {
+                name: "ref".to_string(),
+                len: 100,
+                genome_id: 0,
+            }],
+            minimizers: vec![
+                Minimizer {
+                    hash: 10,
+                    seq_id: 0,
+                    wpos: 0,
+                },
+                Minimizer {
+                    hash: 20,
+                    seq_id: 0,
+                    wpos: 5,
+                },
+                Minimizer {
+                    hash: 30,
+                    seq_id: 0,
+                    wpos: 11,
+                },
+            ],
+            contig_ranges: vec![0..3],
+            lookup: CompactLookupIndex {
+                ranges: Vec::new(),
+                hits: Vec::new(),
+                range_slots: Vec::new(),
+            },
+            freq_threshold: usize::MAX,
+        };
+        let config = AniConfig {
+            kmer_size: 1,
+            fragment_len: 10,
+            min_identity: 0.0,
+            window_size: Some(1),
+            ..AniConfig::default()
+        };
+        let candidate = crate::candidate_window::L1Candidate {
+            seq_id: 0,
+            range_start: 0,
+            range_end: 1,
+        };
+
+        let (mapping, stats) = do_l2_mapping(&query, candidate, &reference, &config, 1)?;
+
+        assert_eq!(stats.windows, 0);
+        assert!(mapping.is_none());
+        Ok(())
+    }
+
     fn deterministic_dna(len: usize) -> String {
         let mut x = 0x1234_5678_9abc_def0u64;
         let mut out = String::with_capacity(len);
