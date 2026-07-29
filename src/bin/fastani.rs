@@ -4,7 +4,7 @@ use anyhow::Result;
 use clap::{Arg, ArgAction, ArgGroup, Command};
 use turboani::{
     AniConfig, MinimizerMode, TimingReport, compare_paths_with_timing, format_timing_summary,
-    read_path_list, write_pair_visualization_pdf, write_phylip_matrix, write_results,
+    read_path_list, write_phylip_matrix, write_results,
 };
 
 #[derive(Debug)]
@@ -23,6 +23,7 @@ struct Cli {
     window_size: Option<usize>,
     ignore_top_percent: f64,
     matrix: bool,
+    #[cfg(feature = "visual")]
     visualize: Option<PathBuf>,
     threads: usize,
 }
@@ -39,6 +40,7 @@ fn main() -> Result<()> {
 
     let query_paths = input_paths(cli.query, cli.query_list)?;
     let ref_paths = input_paths(cli.reference, cli.ref_list)?;
+    #[cfg(feature = "visual")]
     if cli.visualize.is_some() && (query_paths.len() != 1 || ref_paths.len() != 1) {
         anyhow::bail!("--visualize only supports a single -q query and a single -r reference");
     }
@@ -65,8 +67,9 @@ fn main() -> Result<()> {
     if cli.matrix {
         write_phylip_matrix(&cli.output, &query_paths, &ref_paths, &run.results)?;
     }
+    #[cfg(feature = "visual")]
     if let Some(path) = cli.visualize {
-        write_pair_visualization_pdf(&query_paths[0], &ref_paths[0], &config, path)?;
+        turboani::write_pair_visualization_pdf(&query_paths[0], &ref_paths[0], &config, path)?;
     }
     log_timing_summary(&run.timing);
     Ok(())
@@ -184,12 +187,8 @@ fn parse_cli() -> Cli {
                 .help("Also write a Phylip lower-triangular matrix to <output>.matrix; reciprocal ANI values are averaged")
                 .action(ArgAction::SetTrue),
         )
-        .arg(
-            Arg::new("visualize")
-                .long("visualize")
-                .help("Write a single-pair visualization PDF")
-                .value_parser(clap::value_parser!(PathBuf)),
-        )
+        ;
+    let m = add_visualize_arg(m)
         .arg(
             Arg::new("threads")
                 .short('t')
@@ -215,9 +214,26 @@ fn parse_cli() -> Cli {
         window_size: m.get_one::<usize>("window-size").copied(),
         ignore_top_percent: *m.get_one::<f64>("ignore-top-percent").unwrap(),
         matrix: m.get_flag("matrix"),
+        #[cfg(feature = "visual")]
         visualize: m.get_one::<PathBuf>("visualize").cloned(),
         threads: *m.get_one::<usize>("threads").unwrap(),
     }
+}
+
+#[cfg(feature = "visual")]
+fn add_visualize_arg(command: Command) -> Command {
+    command.arg(
+        Arg::new("visualize")
+            .long("visualize")
+            .visible_alias("visualization")
+            .help("Write a single-pair visualization PDF")
+            .value_parser(clap::value_parser!(PathBuf)),
+    )
+}
+
+#[cfg(not(feature = "visual"))]
+fn add_visualize_arg(command: Command) -> Command {
+    command
 }
 
 fn log_timing_summary(report: &TimingReport) {

@@ -5,8 +5,8 @@ use clap::{Arg, ArgAction, ArgGroup, Command};
 use log::info;
 use turboani::{
     AniConfig, MinimizerMode, TimingReport, compare_paths_split_with_timing,
-    compare_paths_with_timing, format_timing_summary, read_path_list, write_pair_visualization_pdf,
-    write_phylip_matrix, write_results,
+    compare_paths_with_timing, format_timing_summary, read_path_list, write_phylip_matrix,
+    write_results,
 };
 
 fn main() -> Result<()> {
@@ -178,13 +178,8 @@ fn main() -> Result<()> {
                 )
                 .action(ArgAction::SetTrue),
         )
-        .arg(
-            Arg::new("visualize")
-                .long("visualize")
-                .help("Write a single-pair visualization PDF")
-                .value_name("PDF")
-                .value_parser(clap::value_parser!(PathBuf)),
-        )
+        ;
+    let m = add_visualize_arg(m)
         .arg(
             Arg::new("split")
                 .long("split")
@@ -229,6 +224,7 @@ fn main() -> Result<()> {
     let diag_cluster_bin = *m.get_one::<usize>("diag-bin").unwrap();
     let diag_cluster_band = *m.get_one::<usize>("diag-band").unwrap();
     let matrix = m.get_flag("matrix");
+    #[cfg(feature = "visual")]
     let visualize_path = m.get_one::<PathBuf>("visualize");
     let split_count = m.get_one::<usize>("split").copied();
     let show_progress = !m.get_flag("no-progress");
@@ -248,6 +244,7 @@ fn main() -> Result<()> {
     let query_paths = input_paths(query_path, query_list_path)?;
     let ref_paths = input_paths(reference_path, ref_list_path)?;
 
+    #[cfg(feature = "visual")]
     if visualize_path.is_some() && (query_paths.len() != 1 || ref_paths.len() != 1) {
         anyhow::bail!("--visualize only supports a single -q query and a single -r reference");
     }
@@ -281,13 +278,31 @@ fn main() -> Result<()> {
         write_phylip_matrix(output_path, &query_paths, &ref_paths, &run.results)?;
     }
 
+    #[cfg(feature = "visual")]
     if let Some(path) = visualize_path {
-        write_pair_visualization_pdf(&query_paths[0], &ref_paths[0], &config, path)?;
+        turboani::write_pair_visualization_pdf(&query_paths[0], &ref_paths[0], &config, path)?;
     }
 
     log_timing_summary(&run.timing);
 
     Ok(())
+}
+
+#[cfg(feature = "visual")]
+fn add_visualize_arg(command: Command) -> Command {
+    command.arg(
+        Arg::new("visualize")
+            .long("visualize")
+            .visible_alias("visualization")
+            .help("Write a single-pair visualization PDF")
+            .value_name("PDF")
+            .value_parser(clap::value_parser!(PathBuf)),
+    )
+}
+
+#[cfg(not(feature = "visual"))]
+fn add_visualize_arg(command: Command) -> Command {
+    command
 }
 
 fn log_timing_summary(report: &TimingReport) {

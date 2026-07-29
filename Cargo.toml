@@ -1,6 +1,6 @@
 [package]
 name = "turboani"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 default-run = "turboani"
 repository = "https://github.com/jianshu93/TurboANI.git"
@@ -8,14 +8,18 @@ license = "MIT"
 description = "Super-fast ANI estimation with SIMD minimizers, efficient candidate window screening and bitset rolling bottom-s sketch order statistics over winnowed minimizers"
 keywords = ["ANI", "minimizers", "mapping", "MinHash", "alignment"]
 
+[features]
+default = []
+visual = ["dep:plotters", "dep:svg2pdf"]
+
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
 needletail = "0.7.3"
-plotters = "0.3.7"
+plotters = { version = "0.3.7", optional = true }
 rayon = "1.11"
 simd-minimizers = "3.0.0"
-svg2pdf = "0.13.0"
+svg2pdf = { version = "0.13.0", optional = true }
 tab-hash = "0.3.0"
 num_cpus = "1"
 env_logger = "0.11"
@@ -28,3 +32,12 @@ tempfile = "3.23"
 [[bin]]
 name = "turboani"
 path = "src/bin/turboani.rs"
+
+[[bin]]
+name = "fastani"
+path = "src/bin/fastani.rs"
+
+[[bin]]
+name = "plot-correlation"
+path = "src/bin/plot-correlation.rs"
+required-features = ["visual"]
