@@ -40,8 +40,12 @@ Single-pair visualization writes a PDF with a query/reference map and fragment i
   -o pair.tsv \
   --visualize pair.pdf
 ```
-`--visualize` intentionally supports only one `-q` and one `-r`; it rejects list mode.
+`--visualize` intentionally supports only one `-q` and one `-r`; it rejects list mode. It is only availabe via the "--features visual" when compiling:
 
+```bash
+RUSTFLAGS="-C target-cpu=native" cargo build --release --features visual
+
+```
 
 This it the plot.
 
