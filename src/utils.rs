@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
+use indicatif::ProgressBar;
 use needletail::{Sequence, parse_fastx_file};
 use rayon::prelude::*;
 use tab_hash::Tab64Twisted;
@@ -49,6 +50,7 @@ pub struct AniConfig {
     pub chain: bool,
     pub diag_cluster_bin: usize,
     pub diag_cluster_band: usize,
+    pub show_progress: bool,
 }
 
 impl Default for AniConfig {
@@ -67,6 +69,7 @@ impl Default for AniConfig {
             chain: false,
             diag_cluster_bin: 1000,
             diag_cluster_band: 500,
+            show_progress: false,
         }
     }
 }
@@ -432,48 +435,92 @@ pub fn compare_paths_with_timing(
     ref_paths: &[PathBuf],
     config: &AniConfig,
 ) -> Result<RunOutput> {
+    compare_paths_with_timing_inner(query_paths, ref_paths, config, None)
+}
+
+fn compare_paths_with_timing_inner(
+    query_paths: &[PathBuf],
+    ref_paths: &[PathBuf],
+    config: &AniConfig,
+    shared_pair_progress: Option<&ProgressBar>,
+) -> Result<RunOutput> {
     config.validate()?;
     let total_start = Instant::now();
     let window_size = config.resolved_window_size();
     let tab_hasher = deterministic_tab64_twisted(config.tab_hash_seed);
-    let (reference, reference_timing) =
-        ReferenceIndex::build(ref_paths, config, window_size, &tab_hasher)?;
+    let reference_progress = progress_bar(
+        config.show_progress,
+        usize_to_u64_saturating(ref_paths.len()),
+        format!("building reference index for {} genomes", ref_paths.len()),
+    );
+    let (reference, reference_timing) = ReferenceIndex::build(
+        ref_paths,
+        config,
+        window_size,
+        &tab_hasher,
+        &reference_progress,
+    )?;
+    finish_progress(
+        &reference_progress,
+        format!("indexed {} reference genomes", ref_paths.len()),
+    );
     let distance_cache = DistanceTableCache::new(config.kmer_size, config.fragment_len);
 
+    let pair_total = usize_to_u64_saturating(query_paths.len())
+        .saturating_mul(usize_to_u64_saturating(ref_paths.len()));
+    let pair_step = usize_to_u64_saturating(ref_paths.len());
+    let pair_progress = shared_pair_progress.cloned().unwrap_or_else(|| {
+        progress_bar(
+            config.show_progress,
+            pair_total,
+            format!(
+                "mapping {} query genomes against {} reference genomes",
+                query_paths.len(),
+                ref_paths.len()
+            ),
+        )
+    });
     let per_query = query_paths
         .par_iter()
         .map(|path| {
-            let query_total_start = Instant::now();
-            let read_start = Instant::now();
-            let query = read_query_file(path, config)?;
-            let read_wall_ns = read_start.elapsed().as_nanos();
+            let result = (|| {
+                let query_total_start = Instant::now();
+                let read_start = Instant::now();
+                let query = read_query_file(path, config)?;
+                let read_wall_ns = read_start.elapsed().as_nanos();
 
-            let map_start = Instant::now();
-            let (mappings, counters) =
-                map_query_file(&query, &reference, config, window_size, &distance_cache)?;
-            let map_wall_ns = map_start.elapsed().as_nanos();
+                let map_start = Instant::now();
+                let (mappings, counters) =
+                    map_query_file(&query, &reference, config, window_size, &distance_cache)?;
+                let map_wall_ns = map_start.elapsed().as_nanos();
 
-            let ani_start = Instant::now();
-            let mapping_count = mappings.len();
-            let results = compute_ani_results(&query, &reference, mappings, config);
-            let ani_wall_ns = ani_start.elapsed().as_nanos();
+                let ani_start = Instant::now();
+                let mapping_count = mappings.len();
+                let results = compute_ani_results(&query, &reference, mappings, config);
+                let ani_wall_ns = ani_start.elapsed().as_nanos();
 
-            let timing = QueryTiming {
-                path: query.path.clone(),
-                genome_len: query.genome_len,
-                fragments: query.fragments.len(),
-                mappings: mapping_count,
-                results: results.len(),
-                total_wall_ns: query_total_start.elapsed().as_nanos(),
-                read_wall_ns,
-                map_wall_ns,
-                ani_wall_ns,
-                counters,
-            };
+                let timing = QueryTiming {
+                    path: query.path.clone(),
+                    genome_len: query.genome_len,
+                    fragments: query.fragments.len(),
+                    mappings: mapping_count,
+                    results: results.len(),
+                    total_wall_ns: query_total_start.elapsed().as_nanos(),
+                    read_wall_ns,
+                    map_wall_ns,
+                    ani_wall_ns,
+                    counters,
+                };
 
-            Ok((results, timing))
+                Ok((results, timing))
+            })();
+            pair_progress.inc(pair_step);
+            result
         })
         .collect::<Result<Vec<_>>>()?;
+    if shared_pair_progress.is_none() {
+        finish_progress(&pair_progress, format!("mapped {pair_total} ANI pairs"));
+    }
 
     let mut all_results = Vec::new();
     let mut query_timings = Vec::new();
@@ -522,6 +569,13 @@ pub fn compare_paths_split_with_timing(
     let mut reference_timing = ReferenceTiming::default();
     let mut aggregate = MappingCounters::default();
     let mut query_timing_by_path: HashMap<PathBuf, QueryTiming> = HashMap::new();
+    let pair_total = usize_to_u64_saturating(query_paths.len())
+        .saturating_mul(usize_to_u64_saturating(ref_paths.len()));
+    let pair_progress = progress_bar(
+        config.show_progress,
+        pair_total,
+        format!("mapping {pair_total} total ANI pairs across {split_count} reference chunks"),
+    );
 
     for (chunk_idx, ref_chunk) in ref_paths.chunks(split_size).enumerate() {
         log::debug!(
@@ -531,7 +585,8 @@ pub fn compare_paths_split_with_timing(
             ref_chunk.len(),
             ref_paths.len()
         );
-        let chunk_run = compare_paths_with_timing(query_paths, ref_chunk, config)?;
+        let chunk_run =
+            compare_paths_with_timing_inner(query_paths, ref_chunk, config, Some(&pair_progress))?;
         log::debug!(
             "phase=end_split_reference_chunk chunk={} split_count={} refs={} elapsed={:.6}s results={}",
             chunk_idx + 1,
@@ -556,6 +611,7 @@ pub fn compare_paths_split_with_timing(
             }
         }
     }
+    finish_progress(&pair_progress, format!("mapped {pair_total} ANI pairs"));
 
     sort_ani_results(&mut all_results);
     let mut query_timings = query_timing_by_path.into_values().collect::<Vec<_>>();
@@ -603,6 +659,25 @@ fn add_query_timing(total: &mut QueryTiming, chunk: QueryTiming) {
     total.map_wall_ns += chunk.map_wall_ns;
     total.ani_wall_ns += chunk.ani_wall_ns;
     total.counters.add(&chunk.counters);
+}
+
+fn progress_bar(enabled: bool, len: u64, _message: String) -> ProgressBar {
+    if !enabled {
+        return ProgressBar::hidden();
+    }
+
+    ProgressBar::new(len)
+}
+
+fn finish_progress(progress: &ProgressBar, message: String) {
+    if progress.is_hidden() {
+        return;
+    }
+    progress.finish_with_message(message);
+}
+
+fn usize_to_u64_saturating(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
 pub fn read_path_list(path: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
@@ -946,6 +1021,7 @@ impl ReferenceIndex {
         config: &AniConfig,
         window_size: usize,
         tab_hasher: &Tab64Twisted,
+        progress: &ProgressBar,
     ) -> Result<(Self, ReferenceTiming)> {
         anyhow::ensure!(!paths.is_empty(), "at least one reference path is required");
         let total_start = Instant::now();
@@ -955,7 +1031,10 @@ impl ReferenceIndex {
             .par_iter()
             .enumerate()
             .map(|(genome_id, path)| {
-                read_reference_genome(path, genome_id, config, window_size, tab_hasher)
+                let result =
+                    read_reference_genome(path, genome_id, config, window_size, tab_hasher);
+                progress.inc(1);
+                result
             })
             .collect::<Result<Vec<_>>>()?;
         let read_wall_ns = read_start.elapsed().as_nanos();

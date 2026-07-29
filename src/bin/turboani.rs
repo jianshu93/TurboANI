@@ -203,6 +203,12 @@ fn main() -> Result<()> {
                 .value_name("THREADS")
                 .value_parser(clap::value_parser!(usize)),
         )
+        .arg(
+            Arg::new("no-progress")
+                .long("no-progress")
+                .help("Disable progress bars")
+                .action(ArgAction::SetTrue),
+        )
         .get_matches();
 
     let query_path = m.get_one::<PathBuf>("query").cloned();
@@ -225,6 +231,7 @@ fn main() -> Result<()> {
     let matrix = m.get_flag("matrix");
     let visualize_path = m.get_one::<PathBuf>("visualize");
     let split_count = m.get_one::<usize>("split").copied();
+    let show_progress = !m.get_flag("no-progress");
     let threads = m
         .get_one::<usize>("threads")
         .copied()
@@ -259,6 +266,7 @@ fn main() -> Result<()> {
         chain: chainx,
         diag_cluster_bin,
         diag_cluster_band,
+        show_progress,
     };
 
     let run = if let Some(split_count) = split_count {

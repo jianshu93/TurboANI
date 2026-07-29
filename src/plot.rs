@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use indicatif::ProgressBar;
 use plotters::coord::Shift;
 use plotters::prelude::*;
 
@@ -24,7 +25,14 @@ pub fn write_pair_visualization_pdf(
     let window_size = config.resolved_window_size();
     let tab_hasher = deterministic_tab64_twisted(config.tab_hash_seed);
     let ref_paths = vec![ref_path.to_path_buf()];
-    let (reference, _) = ReferenceIndex::build(&ref_paths, config, window_size, &tab_hasher)?;
+    let reference_progress = ProgressBar::hidden();
+    let (reference, _) = ReferenceIndex::build(
+        &ref_paths,
+        config,
+        window_size,
+        &tab_hasher,
+        &reference_progress,
+    )?;
     let distance_cache = DistanceTableCache::new(config.kmer_size, config.fragment_len);
     let query = read_query_file(query_path, config)?;
     let (mappings, _) = map_query_file(&query, &reference, config, window_size, &distance_cache)?;

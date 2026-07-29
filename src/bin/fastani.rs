@@ -57,6 +57,7 @@ fn main() -> Result<()> {
         chain: false,
         diag_cluster_bin: 1000,
         diag_cluster_band: 500,
+        show_progress: false,
     };
 
     let run = compare_paths_with_timing(&query_paths, &ref_paths, &config)?;
