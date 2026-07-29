@@ -22,8 +22,24 @@ The final Mash distance and confidence-bound calculation is cached exactly by `(
 
 `simd-minimizers` uses ntHash internally with SIMD to choose minimizer positions. The turboani binary takes the returned canonical minimizer k-mer value and applies `Tab64Twisted` tabulation hashing once. That minimizer is reused for L1 lookup and exact L2 bottom-sketch comparison. The tabulation table is deterministic by default and controlled by `--tabSeed`.
 
-## Build and run
+## Quick start
 
+```bash
+## Linux (no visualization feature, see build section if you want it)
+wget https://github.com/jianshu93/TurboANI/releases/download/v0.1.6/turboani_linux_x86-64_v0.1.6.gz
+gunzip turboani_linux_x86-64_v0.1.6.gz
+chmod a+x ./turboani_linux_x86-64_v0.1.6
+./turboani_linux_x86-64_v0.1.6 -h
+
+## MacOS (visualization feature)
+wget https://github.com/jianshu93/TurboANI/releases/download/v0.1.6/turboani_darwin_aarch64_v0.1.6.gz
+gunzip turboani_linux_x86-64_v0.1.6.gz
+chmod a+x ./turboani_linux_x86-64_v0.1.6
+./turboani_linux_x86-64_v0.1.6 -h
+
+```
+
+## Build and run
 ```bash
 git clone https://github.com/jianshu93/TurboANI
 RUSTFLAGS="-C target-cpu=native" cargo build --release
@@ -40,7 +56,7 @@ Single-pair visualization writes a PDF with a query/reference map and fragment i
   -o pair.tsv \
   --visualize pair.pdf
 ```
-`--visualize` intentionally supports only one `-q` and one `-r`; it rejects list mode. It is only availabe via the "--features visual" when compiling:
+`--visualize` intentionally supports only one `-q` and one `-r`; it rejects list mode. It is only available via the "--features visual" when compiling:
 
 ```bash
 RUSTFLAGS="-C target-cpu=native" cargo build --release --features visual
