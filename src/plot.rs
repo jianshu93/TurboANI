@@ -914,7 +914,7 @@ fn draw_identity_chart(
     identity_chart
         .configure_mesh()
         .x_desc("Query position (Mb)")
-        .y_desc("Reference position (Mb)")
+        .y_desc("Identity")
         .axis_desc_style(("sans-serif", 24))
         .label_style(("sans-serif", 22))
         .draw()?;

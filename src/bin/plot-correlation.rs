@@ -12,7 +12,7 @@ struct Cli {
     #[arg(long)]
     fastani: PathBuf,
     #[arg(long)]
-    rust: PathBuf,
+    turboani: PathBuf,
     #[arg(long)]
     output_pdf: PathBuf,
     #[arg(long)]
@@ -67,7 +67,7 @@ struct Summary {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let fastani = read_ani_table(&cli.fastani)?;
-    let rust = read_ani_table(&cli.rust)?;
+    let rust = read_ani_table(&cli.turboani)?;
     let fastani = if cli.average_pairs {
         average_reciprocal_pairs(fastani)
     } else {
@@ -286,7 +286,7 @@ fn draw_plot(output_pdf: &Path, joined: &[JoinedPair], summary: &Summary) -> Res
 
     let mut svg = String::new();
     {
-        let root = SVGBackend::with_string(&mut svg, (1100, 900)).into_drawing_area();
+        let root = SVGBackend::with_string(&mut svg, (550, 450)).into_drawing_area();
         root.fill(&WHITE)
             .map_err(|e| anyhow::anyhow!("failed to initialize SVG drawing area: {e:?}"))?;
         let (plot_area, legend_area) = root.split_horizontally(930);
@@ -313,10 +313,11 @@ fn draw_plot(output_pdf: &Path, joined: &[JoinedPair], summary: &Summary) -> Res
         chart
             .configure_mesh()
             .x_desc("Original fastANI ANI (%)")
-            .y_desc("Rust rust-fastani ANI (%)")
+            .y_desc("TurboANI ANI (%)")
+            .axis_desc_style(("sans-serif", 24))
+            .label_style(("sans-serif", 22))
             .light_line_style(RGBColor(232, 232, 232))
-            .draw()
-            .map_err(|e| anyhow::anyhow!("failed to draw chart mesh: {e:?}"))?;
+            .draw()?;
         chart
             .draw_series(LineSeries::new(
                 vec![(min_axis, min_axis), (max_axis, max_axis)],
