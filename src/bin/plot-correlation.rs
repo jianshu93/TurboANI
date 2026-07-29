@@ -286,7 +286,7 @@ fn draw_plot(output_pdf: &Path, joined: &[JoinedPair], summary: &Summary) -> Res
 
     let mut svg = String::new();
     {
-        let root = SVGBackend::with_string(&mut svg, (550, 450)).into_drawing_area();
+        let root = SVGBackend::with_string(&mut svg, (1100, 900)).into_drawing_area();
         root.fill(&WHITE)
             .map_err(|e| anyhow::anyhow!("failed to initialize SVG drawing area: {e:?}"))?;
         let (plot_area, legend_area) = root.split_horizontally(930);
