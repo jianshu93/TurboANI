@@ -125,4 +125,6 @@ Delcher, A.L., Phillippy, A., Carlton, J. and Salzberg, S.L., 2002. Fast algorit
 
 Li, H., 2016. Minimap and miniasm: fast mapping and de novo assembly for noisy long sequences. Bioinformatics, 32(14), pp.2103-2110.
 
+Rizzo, N., Cáceres, M. and Mäkinen, V., 2025, August. Practical colinear chaining on sequences revisited. In International Symposium on Bioinformatics Research and Applications (pp. 203-216). Singapore: Springer Nature Singapore.
+
 Marchini, S. and Vigna, S., 2020. Compact Fenwick trees for dynamic ranking and selection. Software: Practice and Experience, 50(7), pp.1184-1202.
