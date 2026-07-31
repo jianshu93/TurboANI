@@ -1,5 +1,6 @@
 use std::fmt::Write as FmtWrite;
 use std::fs;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -45,10 +46,19 @@ pub fn write_pair_visualization_pdf(
     // the conserved view matches the mappings that contribute to ANI instead of
     // displaying every raw L2 candidate hit.
     let visualization_mappings = select_best_visualization_mappings(&mappings, &reference, config);
+    let output_paths = visualization_output_paths(output_path);
+    write_visualization_map_data(
+        &output_paths.map_data,
+        query_path,
+        ref_path,
+        &query,
+        &reference,
+        &visualization_mappings,
+    )?;
     let points = visualization_points(&query, &reference, &visualization_mappings);
     let results = compute_ani_results(&query, &reference, mappings, config);
     draw_pair_visualization_pdf(
-        output_path,
+        &output_paths,
         query_path,
         ref_path,
         &query,
@@ -190,6 +200,82 @@ fn select_best_visualization_mappings(
         .collect()
 }
 
+fn write_visualization_map_data(
+    output_path: &Path,
+    query_path: &Path,
+    ref_path: &Path,
+    query: &QueryFileData,
+    reference: &ReferenceIndex,
+    mappings: &[MappingResult],
+) -> Result<()> {
+    ensure_parent_dir(output_path)?;
+    let ref_offsets = reference_contig_offsets(reference, 0);
+    let file = fs::File::create(output_path).with_context(|| {
+        format!(
+            "failed to create visualization map {}",
+            output_path.display()
+        )
+    })?;
+    let mut writer = BufWriter::new(file);
+
+    writeln!(
+        writer,
+        "query\treference\tquery_fragment\tquery_start\tquery_end\treference_contig\treference_contig_start\treference_contig_end\treference_start\treference_end\tidentity\tidentity_upper_bound\tconserved_sketches\tsketch_size"
+    )
+    .with_context(|| format!("failed to write visualization map {}", output_path.display()))?;
+
+    for mapping in mappings {
+        if reference.contigs[mapping.ref_seq_id].genome_id != 0 {
+            continue;
+        }
+        let Some(query_fragment) = query.fragments.get(mapping.query_seq_id) else {
+            continue;
+        };
+        let Some(ref_offset) = ref_offsets.get(mapping.ref_seq_id) else {
+            continue;
+        };
+
+        let ref_contig = &reference.contigs[mapping.ref_seq_id];
+        let query_start = query_fragment.global_start;
+        let query_end = query_start + mapping.query_len;
+        let ref_start = *ref_offset + mapping.ref_start;
+        let ref_end = *ref_offset + mapping.ref_end + 1;
+
+        writeln!(
+            writer,
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.6}\t{:.6}\t{}\t{}",
+            display_name(query_path),
+            display_name(ref_path),
+            mapping.query_seq_id,
+            query_start,
+            query_end,
+            ref_contig.name,
+            mapping.ref_start,
+            mapping.ref_end + 1,
+            ref_start,
+            ref_end,
+            mapping.identity,
+            mapping.identity_upper_bound,
+            mapping.conserved_sketches,
+            mapping.sketch_size,
+        )
+        .with_context(|| {
+            format!(
+                "failed to write visualization map {}",
+                output_path.display()
+            )
+        })?;
+    }
+
+    writer.flush().with_context(|| {
+        format!(
+            "failed to flush visualization map {}",
+            output_path.display()
+        )
+    })?;
+    Ok(())
+}
+
 fn reference_contig_offsets(reference: &ReferenceIndex, genome_id: usize) -> Vec<usize> {
     let mut offsets = vec![0usize; reference.contigs.len()];
     let mut offset = 0usize;
@@ -203,7 +289,7 @@ fn reference_contig_offsets(reference: &ReferenceIndex, genome_id: usize) -> Vec
 }
 
 fn draw_pair_visualization_pdf(
-    output_path: &Path,
+    paths: &VisualizationOutputPaths,
     query_path: &Path,
     ref_path: &Path,
     query: &QueryFileData,
@@ -211,7 +297,6 @@ fn draw_pair_visualization_pdf(
     results: &[AniResult],
     points: &[VisualizationPoint],
 ) -> Result<()> {
-    let paths = visualization_output_paths(output_path);
     let query_mbp = (query.genome_len as f64 / 1_000_000.0).max(0.001);
     let ref_mbp = (reference.genomes[0].length as f64 / 1_000_000.0).max(0.001);
     let ani_label = ani_label(results);
@@ -240,6 +325,7 @@ fn draw_pair_visualization_pdf(
 struct VisualizationOutputPaths {
     combined_pdf: PathBuf,
     combined_svg: PathBuf,
+    map_data: PathBuf,
     map_pdf: PathBuf,
     map_svg: PathBuf,
     identity_pdf: PathBuf,
@@ -252,6 +338,7 @@ fn visualization_output_paths(output_path: &Path) -> VisualizationOutputPaths {
     VisualizationOutputPaths {
         combined_pdf: output_path.to_path_buf(),
         combined_svg: output_path.with_extension("svg"),
+        map_data: output_path.with_extension("map"),
         map_pdf: visualization_sidecar_path(output_path, "map", "pdf"),
         map_svg: visualization_sidecar_path(output_path, "map", "svg"),
         identity_pdf: visualization_sidecar_path(output_path, "identity", "pdf"),
@@ -532,6 +619,7 @@ fn render_conserved_visualization_svg(
     )?;
 
     append_native_identity_colorbar(&mut svg, 826.0, 63.0, 170.0, 12.0)?;
+    append_native_scale_bar(&mut svg, LEFT, WIDTH - RIGHT, 492.0, x_scale, max_mbp)?;
 
     if points.is_empty() {
         writeln!(
@@ -663,6 +751,90 @@ fn append_native_identity_colorbar(
     }
 
     Ok(())
+}
+
+fn append_native_scale_bar(
+    svg: &mut String,
+    plot_left: f64,
+    plot_right: f64,
+    y: f64,
+    x_scale: f64,
+    max_mbp: f64,
+) -> Result<()> {
+    let scale_mbp = nice_scale_bar_mbp(max_mbp);
+    let bar_width = (scale_mbp * x_scale).min(plot_right - plot_left);
+    if bar_width <= 0.0 {
+        return Ok(());
+    }
+
+    let x1 = plot_right;
+    let x0 = x1 - bar_width;
+    let label = format_scale_bar_label(scale_mbp);
+
+    writeln!(
+        svg,
+        r#"<g id="scale-bar" font-family="sans-serif" fill="black" stroke="black">"#
+    )?;
+    writeln!(
+        svg,
+        r#"<line x1="{x0:.1}" y1="{y:.1}" x2="{x1:.1}" y2="{y:.1}" stroke-width="1.5"/>"#
+    )?;
+    for x in [x0, x1] {
+        writeln!(
+            svg,
+            r#"<line x1="{x:.1}" y1="{:.1}" x2="{x:.1}" y2="{:.1}" stroke-width="1.5"/>"#,
+            y - 5.0,
+            y + 5.0,
+        )?;
+    }
+    writeln!(
+        svg,
+        r#"<text x="{:.1}" y="{:.1}" text-anchor="middle" font-size="13" stroke="none">{}</text>"#,
+        0.5 * (x0 + x1),
+        y + 20.0,
+        xml_escape(&label),
+    )?;
+    writeln!(svg, "</g>")?;
+
+    Ok(())
+}
+
+fn nice_scale_bar_mbp(max_mbp: f64) -> f64 {
+    let target = (max_mbp * 0.22).max(0.001);
+    let base = 10f64.powf(target.log10().floor());
+    for multiplier in [5.0, 2.0, 1.0] {
+        let candidate = multiplier * base;
+        if candidate <= target {
+            return candidate;
+        }
+    }
+    base * 0.5
+}
+
+fn format_scale_bar_label(mbp: f64) -> String {
+    if mbp >= 1.0 {
+        format_measurement(mbp, "Mb")
+    } else {
+        format_measurement(mbp * 1_000.0, "kb")
+    }
+}
+
+fn format_measurement(value: f64, unit: &str) -> String {
+    let rounded = if value >= 100.0 {
+        value.round()
+    } else if value >= 10.0 {
+        (value * 10.0).round() / 10.0
+    } else {
+        (value * 100.0).round() / 100.0
+    };
+    let mut label = format!("{rounded:.2}");
+    while label.contains('.') && label.ends_with('0') {
+        label.pop();
+    }
+    if label.ends_with('.') {
+        label.pop();
+    }
+    format!("{label} {unit}")
 }
 
 fn draw_map_chart(
