@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, ArgGroup, Command};
 use log::info;
 use turboani::{
-    AniConfig, MinimizerMode, TimingReport, compare_paths_split_with_timing,
+    AniConfig, DistanceModel, MinimizerMode, TimingReport, compare_paths_split_with_timing,
     compare_paths_with_timing, format_timing_summary, read_path_list, write_phylip_matrix,
     write_results,
 };
@@ -170,6 +170,14 @@ fn main() -> Result<()> {
                 .action(ArgAction::SetTrue),
         )
         .arg(
+            Arg::new("model")
+                .long("model")
+                .help("Distance model: 0=Poisson Mash equation, 1=binomial Mash equation")
+                .value_name("MODEL")
+                .default_value("0")
+                .value_parser(clap::value_parser!(u8)),
+        )
+        .arg(
             Arg::new("matrix")
                 .long("matrix")
                 .help(
@@ -223,6 +231,8 @@ fn main() -> Result<()> {
     let chainx = m.get_flag("chainx");
     let diag_cluster_bin = *m.get_one::<usize>("diag-bin").unwrap();
     let diag_cluster_band = *m.get_one::<usize>("diag-band").unwrap();
+    let distance_model = DistanceModel::from_code(*m.get_one::<u8>("model").unwrap())
+        .context("--model must be 0 for Poisson or 1 for binomial")?;
     let matrix = m.get_flag("matrix");
     #[cfg(feature = "visual")]
     let visualize_path = m.get_one::<PathBuf>("visualize");
@@ -259,12 +269,19 @@ fn main() -> Result<()> {
         window_size,
         ignore_top_percent,
         tab_hash_seed: tab_seed,
+        distance_model,
         minimizer_mode: MinimizerMode::Simd,
         chain: chainx,
         diag_cluster_bin,
         diag_cluster_band,
         show_progress,
     };
+
+    info!(
+        "using distance model {} ({})",
+        config.distance_model.code(),
+        config.distance_model.name()
+    );
 
     let run = if let Some(split_count) = split_count {
         compare_paths_split_with_timing(&query_paths, &ref_paths, &config, split_count)?

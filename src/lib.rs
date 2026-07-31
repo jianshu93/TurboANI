@@ -9,8 +9,10 @@ pub mod sliding_mapper;
 mod utils;
 
 pub use compute_identity::{
-    estimate_minimum_hits, estimate_minimum_hits_relaxed, estimate_pvalue, j2md, md_lower_bound,
-    md2j, recommended_window_size,
+    DistanceModel, estimate_minimum_hits, estimate_minimum_hits_relaxed,
+    estimate_minimum_hits_relaxed_with_model, estimate_minimum_hits_with_model, estimate_pvalue,
+    estimate_pvalue_with_model, j2md, md_lower_bound, md_lower_bound_with_model, md2j,
+    recommended_window_size, recommended_window_size_with_model,
 };
 #[cfg(feature = "visual")]
 pub use plot::write_pair_visualization_pdf;

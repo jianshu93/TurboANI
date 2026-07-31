@@ -33,7 +33,8 @@ pub fn write_pair_visualization_pdf(
         &tab_hasher,
         &reference_progress,
     )?;
-    let distance_cache = DistanceTableCache::new(config.kmer_size, config.fragment_len);
+    let distance_cache =
+        DistanceTableCache::new(config.kmer_size, config.fragment_len, config.distance_model);
     let query = read_query_file(query_path, config)?;
     let (mappings, _) = map_query_file(&query, &reference, config, window_size, &distance_cache)?;
 

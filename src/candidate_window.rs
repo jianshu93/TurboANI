@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::compute_identity::estimate_minimum_hits_relaxed;
+use crate::compute_identity::estimate_minimum_hits_relaxed_with_model;
 use crate::simd_minimizer::MinimizerMode;
 use crate::{AniConfig, Offset, QuerySketch, ReferenceIndex, SeqId, u32_checked};
 
@@ -83,10 +83,11 @@ fn do_l1_mapping_fastani_exact(
         }
     }
 
-    let minimum_hits = estimate_minimum_hits_relaxed(
+    let minimum_hits = estimate_minimum_hits_relaxed_with_model(
         query.unique_hashes.len(),
         config.kmer_size,
         config.min_identity,
+        config.distance_model,
     )
     .max(1);
 

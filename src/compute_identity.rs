@@ -5,6 +5,65 @@ use std::sync::{Arc, Mutex, OnceLock};
 use crate::sliding_mapper::MappingResult;
 use crate::{AniConfig, AniResult, Offset, QueryFileData, ReferenceIndex, SeqId};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DistanceModel {
+    Poisson,
+    Binomial,
+}
+
+impl DistanceModel {
+    pub fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::Poisson),
+            1 => Some(Self::Binomial),
+            _ => None,
+        }
+    }
+
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Poisson => 0,
+            Self::Binomial => 1,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Poisson => "poisson",
+            Self::Binomial => "binomial",
+        }
+    }
+
+    pub fn jaccard_to_distance(self, jaccard: f64, k: usize) -> f64 {
+        if jaccard <= 0.0 {
+            1.0
+        } else if jaccard >= 1.0 {
+            0.0
+        } else {
+            let shared_kmer_probability = (2.0 * jaccard) / (1.0 + jaccard);
+            match self {
+                Self::Poisson => (-1.0 / k as f64) * shared_kmer_probability.ln(),
+                Self::Binomial => 1.0 - shared_kmer_probability.powf(1.0 / k as f64),
+            }
+        }
+    }
+
+    pub fn distance_to_jaccard(self, distance: f64, k: usize) -> f64 {
+        let distance = distance.clamp(0.0, 1.0);
+        let shared_kmer_probability = match self {
+            Self::Poisson => (-(k as f64) * distance).exp(),
+            Self::Binomial => (1.0 - distance).powf(k as f64),
+        };
+        shared_kmer_probability / (2.0 - shared_kmer_probability)
+    }
+}
+
+impl Default for DistanceModel {
+    fn default() -> Self {
+        Self::Poisson
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DistanceEstimate {
     pub(crate) identity: f64,
@@ -14,14 +73,16 @@ pub(crate) struct DistanceEstimate {
 #[derive(Debug)]
 pub(crate) struct DistanceTableCache {
     kmer_size: usize,
+    model: DistanceModel,
     tables: Vec<OnceLock<Arc<[DistanceEstimate]>>>,
     overflow: Mutex<HashMap<usize, Arc<[DistanceEstimate]>>>,
 }
 
 impl DistanceTableCache {
-    pub(crate) fn new(kmer_size: usize, max_sketch_size: usize) -> Self {
+    pub(crate) fn new(kmer_size: usize, max_sketch_size: usize, model: DistanceModel) -> Self {
         Self {
             kmer_size,
+            model,
             tables: std::iter::repeat_with(OnceLock::new)
                 .take(max_sketch_size + 1)
                 .collect(),
@@ -32,7 +93,11 @@ impl DistanceTableCache {
     pub(crate) fn table_for(&self, sketch_size: usize) -> Arc<[DistanceEstimate]> {
         if let Some(cell) = self.tables.get(sketch_size) {
             return Arc::clone(cell.get_or_init(|| {
-                Arc::<[DistanceEstimate]>::from(build_distance_table(sketch_size, self.kmer_size))
+                Arc::<[DistanceEstimate]>::from(build_distance_table(
+                    sketch_size,
+                    self.kmer_size,
+                    self.model,
+                ))
             }));
         }
 
@@ -44,14 +109,21 @@ impl DistanceTableCache {
             return Arc::clone(table);
         }
 
-        let table =
-            Arc::<[DistanceEstimate]>::from(build_distance_table(sketch_size, self.kmer_size));
+        let table = Arc::<[DistanceEstimate]>::from(build_distance_table(
+            sketch_size,
+            self.kmer_size,
+            self.model,
+        ));
         overflow.insert(sketch_size, Arc::clone(&table));
         table
     }
 }
 
-pub(crate) fn build_distance_table(sketch_size: usize, kmer_size: usize) -> Vec<DistanceEstimate> {
+pub(crate) fn build_distance_table(
+    sketch_size: usize,
+    kmer_size: usize,
+    model: DistanceModel,
+) -> Vec<DistanceEstimate> {
     if sketch_size == 0 {
         return Vec::new();
     }
@@ -59,8 +131,9 @@ pub(crate) fn build_distance_table(sketch_size: usize, kmer_size: usize) -> Vec<
     let mut table = Vec::with_capacity(sketch_size + 1);
     for shared in 0..=sketch_size {
         let best_jaccard = shared as f64 / sketch_size as f64;
-        let mash_dist = j2md(best_jaccard, kmer_size);
-        let mash_dist_lower_bound = md_lower_bound(mash_dist, sketch_size, kmer_size, 0.9);
+        let mash_dist = model.jaccard_to_distance(best_jaccard, kmer_size);
+        let mash_dist_lower_bound =
+            md_lower_bound_with_model(mash_dist, sketch_size, kmer_size, 0.9, model);
         table.push(DistanceEstimate {
             identity: 100.0 * (1.0 - mash_dist),
             identity_upper_bound: 100.0 * (1.0 - mash_dist_lower_bound),
@@ -176,26 +249,30 @@ pub(crate) fn cmp_f64(a: f64, b: f64) -> Ordering {
 }
 
 pub fn j2md(jaccard: f64, k: usize) -> f64 {
-    if jaccard <= 0.0 {
-        1.0
-    } else if jaccard >= 1.0 {
-        0.0
-    } else {
-        (-1.0 / k as f64) * ((2.0 * jaccard) / (1.0 + jaccard)).ln()
-    }
+    DistanceModel::Poisson.jaccard_to_distance(jaccard, k)
 }
 
 pub fn md2j(distance: f64, k: usize) -> f64 {
-    1.0 / (2.0 * (k as f64 * distance).exp() - 1.0)
+    DistanceModel::Poisson.distance_to_jaccard(distance, k)
 }
 
 pub fn md_lower_bound(distance: f64, sketch_size: usize, k: usize, ci: f64) -> f64 {
+    md_lower_bound_with_model(distance, sketch_size, k, ci, DistanceModel::Poisson)
+}
+
+pub fn md_lower_bound_with_model(
+    distance: f64,
+    sketch_size: usize,
+    k: usize,
+    ci: f64,
+    model: DistanceModel,
+) -> f64 {
     if sketch_size == 0 {
         return 1.0;
     }
 
     let q2 = (1.0 - ci) / 2.0;
-    let p = md2j(distance, k).clamp(0.0, 1.0);
+    let p = model.distance_to_jaccard(distance, k).clamp(0.0, 1.0);
     let mut x = ((sketch_size as f64 * p).ceil() as usize).max(1);
 
     while x <= sketch_size {
@@ -208,26 +285,49 @@ pub fn md_lower_bound(distance: f64, sketch_size: usize, k: usize, ci: f64) -> f
     }
 
     x = x.clamp(1, sketch_size);
-    j2md(x as f64 / sketch_size as f64, k)
+    model.jaccard_to_distance(x as f64 / sketch_size as f64, k)
 }
 
 pub fn estimate_minimum_hits(sketch_size: usize, k: usize, percent_identity: f64) -> usize {
+    estimate_minimum_hits_with_model(sketch_size, k, percent_identity, DistanceModel::Poisson)
+}
+
+pub fn estimate_minimum_hits_with_model(
+    sketch_size: usize,
+    k: usize,
+    percent_identity: f64,
+    model: DistanceModel,
+) -> usize {
     let mash_dist = 1.0 - percent_identity / 100.0;
-    let jaccard = md2j(mash_dist, k);
+    let jaccard = model.distance_to_jaccard(mash_dist, k);
     (sketch_size as f64 * jaccard).ceil() as usize
 }
 
 pub fn estimate_minimum_hits_relaxed(sketch_size: usize, k: usize, percent_identity: f64) -> usize {
+    estimate_minimum_hits_relaxed_with_model(
+        sketch_size,
+        k,
+        percent_identity,
+        DistanceModel::Poisson,
+    )
+}
+
+pub fn estimate_minimum_hits_relaxed_with_model(
+    sketch_size: usize,
+    k: usize,
+    percent_identity: f64,
+    model: DistanceModel,
+) -> usize {
     if sketch_size == 0 {
         return 0;
     }
 
-    let strict = estimate_minimum_hits(sketch_size, k, percent_identity);
+    let strict = estimate_minimum_hits_with_model(sketch_size, k, percent_identity, model);
     let mut relaxed = strict;
     for i in (0..=strict).rev() {
         let jaccard = i as f64 / sketch_size as f64;
-        let d = j2md(jaccard, k);
-        let d_lower = md_lower_bound(d, sketch_size, k, 0.9);
+        let d = model.jaccard_to_distance(jaccard, k);
+        let d_lower = md_lower_bound_with_model(d, sketch_size, k, 0.9, model);
         let upper_identity = 100.0 * (1.0 - d_lower);
         if upper_identity >= percent_identity {
             relaxed = i;
@@ -246,11 +346,31 @@ pub fn estimate_pvalue(
     query_len: usize,
     reference_len: u64,
 ) -> f64 {
+    estimate_pvalue_with_model(
+        sketch_size,
+        k,
+        alphabet_size,
+        identity,
+        query_len,
+        reference_len,
+        DistanceModel::Poisson,
+    )
+}
+
+pub fn estimate_pvalue_with_model(
+    sketch_size: usize,
+    k: usize,
+    alphabet_size: usize,
+    identity: f64,
+    query_len: usize,
+    reference_len: u64,
+    model: DistanceModel,
+) -> f64 {
     let kmer_space = (alphabet_size as f64).powi(k as i32);
     let px = 1.0 / (1.0 + kmer_space / query_len as f64);
     let py = px;
     let random_jaccard = px * py / (px + py - px * py);
-    let x = estimate_minimum_hits_relaxed(sketch_size, k, identity);
+    let x = estimate_minimum_hits_relaxed_with_model(sketch_size, k, identity, model);
     let sf = if x == 0 {
         1.0
     } else {
@@ -267,14 +387,41 @@ pub fn recommended_window_size(
     query_len: usize,
     reference_len: u64,
 ) -> usize {
+    recommended_window_size_with_model(
+        pvalue_cutoff,
+        k,
+        alphabet_size,
+        identity,
+        query_len,
+        reference_len,
+        DistanceModel::Poisson,
+    )
+}
+
+pub fn recommended_window_size_with_model(
+    pvalue_cutoff: f64,
+    k: usize,
+    alphabet_size: usize,
+    identity: f64,
+    query_len: usize,
+    reference_len: u64,
+    model: DistanceModel,
+) -> usize {
     let mut potential = vec![1usize, 2, 5];
     potential.extend((10..query_len).step_by(10));
 
     let optimal_sketch_size = potential
         .into_iter()
         .find(|&s| {
-            estimate_pvalue(s, k, alphabet_size, identity, query_len, reference_len)
-                <= pvalue_cutoff
+            estimate_pvalue_with_model(
+                s,
+                k,
+                alphabet_size,
+                identity,
+                query_len,
+                reference_len,
+                model,
+            ) <= pvalue_cutoff
         })
         .unwrap_or(query_len);
 

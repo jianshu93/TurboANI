@@ -1,5 +1,5 @@
 use crate::candidate_window::{L1Candidate, L1Stats};
-use crate::compute_identity::estimate_minimum_hits_relaxed;
+use crate::compute_identity::estimate_minimum_hits_relaxed_with_model;
 use crate::{AniConfig, Offset, QuerySketch, ReferenceIndex, SeqId};
 
 const CHAIN_MIN_BOUND: i64 = 100;
@@ -172,10 +172,11 @@ fn do_l1_mapping_diagonal_impl(
 ) -> (Vec<L1Candidate>, L1Stats) {
     let diag_cluster_bin = config.diag_cluster_bin as isize;
     let diag_cluster_band = config.diag_cluster_band;
-    let min_unique_hits = estimate_minimum_hits_relaxed(
+    let min_unique_hits = estimate_minimum_hits_relaxed_with_model(
         query.unique_hashes.len(),
         config.kmer_size,
         config.min_identity,
+        config.distance_model,
     )
     .max(1);
 

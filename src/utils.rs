@@ -15,7 +15,8 @@ use tab_hash::Tab64Twisted;
 
 use crate::candidate_window::{PackedMinimizerHit, do_l1_mapping};
 use crate::compute_identity::{
-    DistanceEstimate, DistanceTableCache, compute_ani_results, recommended_window_size,
+    DistanceEstimate, DistanceModel, DistanceTableCache, compute_ani_results,
+    recommended_window_size_with_model,
 };
 use crate::simd_minimizer::{
     Minimizer, MinimizerMode, QuerySeed, deterministic_tab64_twisted, sequence_minimizers,
@@ -46,6 +47,7 @@ pub struct AniConfig {
     pub window_size: Option<usize>,
     pub ignore_top_percent: f64,
     pub tab_hash_seed: u64,
+    pub distance_model: DistanceModel,
     pub minimizer_mode: MinimizerMode,
     pub chain: bool,
     pub diag_cluster_bin: usize,
@@ -65,6 +67,7 @@ impl Default for AniConfig {
             window_size: None,
             ignore_top_percent: 0.0,
             tab_hash_seed: 42,
+            distance_model: DistanceModel::Poisson,
             minimizer_mode: MinimizerMode::Simd,
             chain: false,
             diag_cluster_bin: 1000,
@@ -77,13 +80,14 @@ impl Default for AniConfig {
 impl AniConfig {
     pub fn resolved_window_size(&self) -> usize {
         let window_size = self.window_size.unwrap_or_else(|| {
-            recommended_window_size(
+            recommended_window_size_with_model(
                 self.p_value,
                 self.kmer_size,
                 4,
                 self.min_identity,
                 self.fragment_len,
                 self.reference_size,
+                self.distance_model,
             )
         });
         match self.minimizer_mode {
@@ -464,7 +468,8 @@ fn compare_paths_with_timing_inner(
         &reference_progress,
         format!("indexed {} reference genomes", ref_paths.len()),
     );
-    let distance_cache = DistanceTableCache::new(config.kmer_size, config.fragment_len);
+    let distance_cache =
+        DistanceTableCache::new(config.kmer_size, config.fragment_len, config.distance_model);
 
     let pair_total = usize_to_u64_saturating(query_paths.len())
         .saturating_mul(usize_to_u64_saturating(ref_paths.len()));
@@ -1327,9 +1332,28 @@ mod tests {
     }
 
     #[test]
+    fn binomial_distance_model_roundtrips_jaccard() {
+        assert_eq!(DistanceModel::from_code(0), Some(DistanceModel::Poisson));
+        assert_eq!(DistanceModel::from_code(1), Some(DistanceModel::Binomial));
+        assert_eq!(DistanceModel::from_code(2), None);
+
+        let jaccard = 0.12;
+        let poisson = DistanceModel::Poisson.jaccard_to_distance(jaccard, 16);
+        let binomial = DistanceModel::Binomial.jaccard_to_distance(jaccard, 16);
+        let roundtrip = DistanceModel::Binomial.distance_to_jaccard(binomial, 16);
+
+        assert!(binomial < poisson);
+        assert!((jaccard - roundtrip).abs() < 1e-12);
+
+        let table = build_distance_table(100, 16, DistanceModel::Binomial);
+        assert_eq!(table[100].identity.to_bits(), 100.0f64.to_bits());
+        assert_eq!(table[0].identity.to_bits(), 0.0f64.to_bits());
+    }
+
+    #[test]
     fn distance_table_matches_direct_formula() {
         let sketch_size = 257;
-        let table = build_distance_table(sketch_size, 16);
+        let table = build_distance_table(sketch_size, 16, DistanceModel::Poisson);
         for &shared in &[0usize, 1, 17, 128, 256, 257] {
             let best_jaccard = shared as f64 / sketch_size as f64;
             let mash_dist = j2md(best_jaccard, 16);
@@ -1353,13 +1377,14 @@ mod tests {
             ..AniConfig::default()
         };
         assert_eq!(
-            recommended_window_size(
+            recommended_window_size_with_model(
                 default_k_config.p_value,
                 default_k_config.kmer_size,
                 4,
                 default_k_config.min_identity,
                 default_k_config.fragment_len,
                 default_k_config.reference_size,
+                default_k_config.distance_model,
             ),
             17
         );
@@ -1559,7 +1584,7 @@ mod tests {
             len: 10,
             unique_hashes: vec![10, 20, 30],
             unique_seeds: Vec::new(),
-            distance_table: Arc::from(build_distance_table(3, 1)),
+            distance_table: Arc::from(build_distance_table(3, 1, DistanceModel::Poisson)),
         };
         let reference = ReferenceIndex {
             genomes: vec![GenomeInfo {
