@@ -37,7 +37,7 @@ pub(crate) struct IndexedMinimizer {
 }
 
 // Maintains the classic bottom-k union sketch exactly as an L2
-// reference window slides, avoiding OPH sketch construction per placement.
+// reference window slides
 #[derive(Debug)]
 pub(crate) struct BitsetBottomSketchSlideMapper {
     query_present: Vec<u8>,

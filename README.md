@@ -1,5 +1,7 @@
 # TurboANI
 
+[![Crates.io](https://img.shields.io/crates/v/turboani.svg)](https://crates.io/crates/turboani)
+
 TurboANI is a super fast ANI estimation algorithm implemented in pure Rust:
 
 - `simd-minimizers` for canonical minimizer positions and super-k-mer window coordinates. Note that the super-k-mer windows and corresponding minimizer positions were retained. 
