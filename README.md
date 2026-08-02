@@ -50,7 +50,7 @@ cp queries.txt references.txt
 turboani --ql queries.txt --rl references.txt -o turboani.tsv
 
 ```
-
+Note: if you see "Illegal instruction (core dumped)" error, it means that you host machie does not support the same SIMD instructions as the Bioconda host machine (your machine is too old). You might need to compile from source, see "Build from source" section.
 
 ## Pre-built binaries
 ```bash
@@ -70,6 +70,10 @@ chmod a+x ./turboani_darwin_aarch64_v0.1.6
 
 ## Build from source
 ```bash
+### Install rustup here: here: https://rustup.rs
+### After intalling rustup
+rustup install nightly
+rustup default nightly
 git clone https://github.com/jianshu93/TurboANI
 RUSTFLAGS="-C target-cpu=native" cargo build --release
 ./target/release/turboani -h
