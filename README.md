@@ -87,6 +87,7 @@ rustup default nightly
 git clone https://github.com/jianshu93/TurboANI
 RUSTFLAGS="-C target-cpu=native" cargo build --release
 ./target/release/turboani -h
+```
 
 
 ## Detailed usage
