@@ -51,8 +51,7 @@ turboani --ql queries.txt --rl references.txt -o turboani.tsv
 
 ```
 
-Important note: if you see "Illegal instruction (core dumped)" error, it means that you host machie does not support the same SIMD instructions as the Bioconda host machine (your machine is too old). You might need to compile from source, see "Build from source" section. Tests passed on AMD Zen4 "__archspec=1=zen4" and Intel Xeon Scalable Gen 4 "__archspec=1=sapphirerapids" or above. Run "conda info | grep -A20 'virtual packages'" to see your supported instructions. 
-
+Important note: if you see "Illegal instruction (core dumped)" error, it means that you host machie does not support the same SIMD instructions as the Bioconda host machine (your CPU is too old). You might need to compile from source in this case, see "Build from source" section. Tests passed on AMD Zen4 "__archspec=1=zen4" and Intel Xeon Scalable Gen 4 "__archspec=1=sapphirerapids" or above. Run "conda info | grep -A20 'virtual packages'" to see your CPU instructions. See [SIMD support details](SIMD.md).
 ## Pre-built binaries
 ```bash
 ## Linux (no visualization feature, see build section if you want it)
