@@ -57,14 +57,14 @@ Note: if you see "Illegal instruction (core dumped)" error, it means that you ho
 ## Linux (no visualization feature, see build section if you want it)
 wget https://github.com/jianshu93/TurboANI/releases/download/v0.1.6/turboani_linux_x86-64_v0.1.6.gz
 gunzip turboani_linux_x86-64_v0.1.6.gz
-chmod a+x ./turboani_linux_x86-64_v0.1.6
-./turboani_linux_x86-64_v0.1.6 -h
+chmod a+x ./turboani
+./turboani -h
 
 ## MacOS (visualization feature)
-wget https://github.com/jianshu93/TurboANI/releases/download/v0.1.6/turboani_darwin_aarch64_v0.1.6.gz
-gunzip turboani_darwin_aarch64_v0.1.6.gz
-chmod a+x ./turboani_darwin_aarch64_v0.1.6
-./turboani_darwin_aarch64_v0.1.6 -h
+wget https://github.com/jianshu93/TurboANI/releases/download/v0.1.6/turboani_darwin_aarch64_v0.1.6.tar.gz
+tar -xzvf turboani_darwin_aarch64_v0.1.6.tar.gz
+chmod a+x ./turboani
+./turboani -h
 
 ```
 
