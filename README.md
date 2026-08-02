@@ -50,7 +50,7 @@ cp queries.txt references.txt
 turboani --ql queries.txt --rl references.txt -o turboani.tsv
 
 ```
-Note: if you see "Illegal instruction (core dumped)" error, it means that you host machie does not support the same SIMD instructions as the Bioconda host machine (your machine is too old). You might need to compile from source, see "Build from source" section.
+Note: if you see "Illegal instruction (core dumped)" error, it means that you host machie does not support the same SIMD instructions as the Bioconda host machine (your machine is too old). You might need to compile from source, see "Build from source" section. Tests passed on AMD Zen4 "__archspec=1=zen4".
 
 ## Pre-built binaries
 ```bash
