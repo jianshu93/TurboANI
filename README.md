@@ -1,6 +1,15 @@
 # TurboANI
 
+[![install with bioconda](https://img.shields.io/badge/install%20with-bioconda-brightgreen.svg?style=flat)](http://bioconda.github.io/recipes/turboani/README.html)
+![](https://anaconda.org/bioconda/turboani/badges/license.svg)
+![](https://anaconda.org/bioconda/turboani/badges/version.svg)
+![](https://anaconda.org/bioconda/turboani/badges/latest_release_relative_date.svg)
+![](https://anaconda.org/bioconda/turboani/badges/platforms.svg)
+[![install with conda](https://anaconda.org/bioconda/turboani/badges/downloads.svg)](https://anaconda.org/bioconda/turboani)
+
+
 [![Crates.io](https://img.shields.io/crates/v/turboani.svg)](https://crates.io/crates/turboani)
+
 
 TurboANI is a super fast ANI estimation algorithm implemented in pure Rust:
 
@@ -24,8 +33,26 @@ The final Mash distance and confidence-bound calculation is cached exactly by `(
 
 `simd-minimizers` uses ntHash internally with SIMD to choose minimizer positions. The turboani binary takes the returned canonical minimizer k-mer value and applies `Tab64Twisted` tabulation hashing once. That minimizer is reused for L1 lookup and exact L2 bottom-sketch comparison. The tabulation table is deterministic by default and controlled by `--tabSeed`.
 
-## Quick start
+## Quick install and usage 
+On Linux or MacOS (CPU) via bioconda
+```bash
+conda install -c bioconda -c conda-forge turboani
+```
+This is how you can run all-versua-all ANI for a list of genomes (gz supprted, one per line):
+```bash
+### obtain some testing genomes first
+wget https://github.com/jianshu93/TurboANI/releases/download/v0.1.6/strep_30_sampled_genomes.tar.gz
+tar -xzvf strep_30_sampled_genomes.tar.gz
+cd strep_30_sampled_genomes
+find . -name "*.fna.gz" > queries.txt
+cp queries.txt references.txt
+### run all-versus-all in list mode
+turboani --ql queries.txt --rl references.txt -o turboani.tsv
 
+```
+
+
+## Pre-built binaries
 ```bash
 ## Linux (no visualization feature, see build section if you want it)
 wget https://github.com/jianshu93/TurboANI/releases/download/v0.1.6/turboani_linux_x86-64_v0.1.6.gz
@@ -41,13 +68,15 @@ chmod a+x ./turboani_darwin_aarch64_v0.1.6
 
 ```
 
-## Build and run
+## Build from source
 ```bash
 git clone https://github.com/jianshu93/TurboANI
 RUSTFLAGS="-C target-cpu=native" cargo build --release
 ./target/release/turboani -h
 ```
 
+
+## Detailed usage
 ### single pair comparsion
 Single-pair visualization writes a PDF with a query/reference map and fragment identity panel:
 
