@@ -67,6 +67,11 @@ chmod a+x ./turboani
 
 ```
 ## Install from crates.io via cargo
+### Install cargo first
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
 ```bash
 ## On Linux
 RUSTFLAGS="-C target-cpu=x86-64-v3" cargo install turboani
