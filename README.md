@@ -66,6 +66,15 @@ chmod a+x ./turboani
 ./turboani -h
 
 ```
+## Install from crates.io via cargo
+```bash
+## On Linux
+RUSTFLAGS="-C target-cpu=x86-64-v3" cargo install turboani
+
+## MacOS
+RUSTFLAGS="-C target-cpu=native" cargo install turboani
+
+```
 
 ## Build from source (Linux)
 ```bash
