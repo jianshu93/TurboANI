@@ -65,6 +65,14 @@ tar -xzvf turboani_darwin_aarch64_v0.1.6.tar.gz
 chmod a+x ./turboani
 ./turboani -h
 
+## Homebrew install for MacOS
+## install homebrew first: https://brew.sh
+brew update
+brew tap jianshu93/TurboANI
+brew trust jianshu93/TurboANI
+brew install TurboANI
+turboani -h
+
 ```
 ## Install from crates.io via cargo
 ### Install cargo first
