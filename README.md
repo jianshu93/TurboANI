@@ -184,16 +184,5 @@ Rayon is used at three levels where the data are independent: reference genome i
 The implementation skips minimizer windows spanning ambiguous bases before passing sequence runs to `simd-minimizers`. This is usually preferable for Rust SIMD packing and keeps `N`-rich phage assemblies from creating artificial seeds.
 
 ## References
-Jain, C., Rodriguez-R, L.M., Phillippy, A.M., Konstantinidis, K.T. and Aluru, S., 2018. High throughput ANI analysis of 90K prokaryotic genomes reveals clear species boundaries. Nature communications, 9(1), p.5114.
 
-Jain, C., Dilthey, A., Koren, S., Aluru, S. and Phillippy, A.M., 2018. A fast approximate algorithm for mapping long reads to large reference databases. Journal of Computational Biology, 25(7), pp.766-779.
-
-Delcher, A.L., Phillippy, A., Carlton, J. and Salzberg, S.L., 2002. Fast algorithms for large-scale genome alignment and comparison. Nucleic acids research, 30(11), pp.2478-2483.
-
-Li, H., 2016. Minimap and miniasm: fast mapping and de novo assembly for noisy long sequences. Bioinformatics, 32(14), pp.2103-2110.
-
-Li, H., 2018. Minimap2: pairwise alignment for nucleotide sequences. Bioinformatics, 34(18), pp.3094-3100
-
-Rizzo, N., Cáceres, M. and Mäkinen, V., 2025, August. Practical colinear chaining on sequences revisited. In International Symposium on Bioinformatics Research and Applications (pp. 203-216). Singapore: Springer Nature Singapore.
-
-Marchini, S. and Vigna, S., 2020. Compact Fenwick trees for dynamic ranking and selection. Software: Practice and Experience, 50(7), pp.1184-1202.
+Paper to come
