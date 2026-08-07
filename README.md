@@ -1,4 +1,3 @@
-# TurboANI
 
 [![install with bioconda](https://img.shields.io/badge/install%20with-bioconda-brightgreen.svg?style=flat)](http://bioconda.github.io/recipes/turboani/README.html)
 ![](https://anaconda.org/bioconda/turboani/badges/license.svg)
@@ -7,10 +6,13 @@
 ![](https://anaconda.org/bioconda/turboani/badges/platforms.svg)
 [![install with conda](https://anaconda.org/bioconda/turboani/badges/downloads.svg)](https://anaconda.org/bioconda/turboani)
 
-
 [![Crates.io](https://img.shields.io/crates/v/turboani.svg)](https://crates.io/crates/turboani)
 
+<div align="center">
+  <img width="100%" src ="TurboANI_logo.svg">
+</div>
 
+# TurboANI
 TurboANI is a super fast ANI estimation algorithm implemented in pure Rust:
 
 The main algorithm flow:
