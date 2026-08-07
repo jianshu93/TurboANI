@@ -13,25 +13,35 @@
 
 TurboANI is a super fast ANI estimation algorithm implemented in pure Rust:
 
-- `simd-minimizers` for canonical minimizer positions and super-k-mer window coordinates. Note that the super-k-mer windows and corresponding minimizer positions were retained. 
-- `tab-hash::Tab64Twisted` for deterministic 64-bit tabulation-hashed minimizer. This step is a rehash to obtain true pseudo-randomness via twisted tabulation hashing. 
-- A MUMmer-style diagonal clustering followed by minimap2-style fast chaining for L1 candidate window screening.
-- A cache-friendly exact L2 bottom-sketch slide mapper with local coordinate indices and a two-level bitset pivot.
-- `plotters` plus `svg2pdf` for single-pair PDF visualizations.
-
 The main algorithm flow:
 
-1. Build a reference minimizer lookup.
-2. L1: cluster query-fragment minimizer seed hits into candidate reference intervals (via diagnoal clustering followed by minimap2 chaining or the much slower optimal ChainX co-linear chaining).
-3. L2: slide query-length super-windows over each L1 interval and score each placement.
+1. Build a reference minimizer lookup. Intial reference window identification with inverted index.
+2. L1: Cluster query-fragment minimizer seed hits into candidate reference intervals (via diagnoal clustering), followed by minimap2 chaining or the much slower optimal ChainX (co-linear chaining).
+3. L2: slide query-length windows over each L1 window interval and score them via a sliding bottom-s MinHash sketch algorithm.
 4. Keep best-hit and reference-bin reciprocal filters before averaging ANI.
-5. The split mode allows query mapping to a small subset of references to reduce RAM. 
+
+
+
+Key ideas:
+- `simd-minimizers` for canonical minimizer positions and super-k-mer window coordinates. Note that the super-k-mer windows and corresponding minimizer positions were retained. 
+- `tab-hash::Tab64Twisted` for deterministic 64-bit tabulation-hashed minimizer. This step is a rehash to obtain true pseudo-randomness via twisted/simple tabulation hashing. 
+- Compact inverted minimizer index. It avoids HashMap's pointer-chasing and per-key vector overhead by flattening everything into two arrays with open-addressed slot lookup.
+- A MUMmer-style diagonal clustering followed by minimap2-style fast chaining for L1 candidate window screening.
+- A cache-friendly exact L2 bottom-s MinHash sketch slide mapper with local coordinate indices and a two-level bitset pivot.
+- Reuses precomputed distance tables so that the post-L2 distance calculation becomes a direct table lookup instead of repeated confidence-bound and Mash-distance calculations.
+- Efficient Rayon parallelism: work-stealing parallel iterators at multiple levels, including reference-genome indexing, query-genome mapping, and per-fragment L1/L2 mapping. The shared reference index is immutable, while fragment-level minimizers, candidate windows, L2 sliding state, mappings, and counters are worker-local, avoiding lock contention in the dominant mapping stages. This design gives fine-grained load balancing for highly uneven genome-pair workloads.
+
+
 
 L2 scoring uses a new mashmap-like incremental bottom-sketch slide mapper: a query fragment's unique minimizer seed the bottom-k union, and each candidate reference super-window is updated as the window slides. The active implementation uses local coordinate compression plus a summary bitset to move the bottom-k pivot with word-level operations instead of a tree lookup on every insert/delete.
 
 The final Mash distance and confidence-bound calculation is cached exactly by `(sketch_size, best_shared)`, so each L2 candidate performs a table lookup rather than recomputing the same binomial-bound math.
 
 `simd-minimizers` uses ntHash internally with SIMD to choose minimizer positions. The turboani binary takes the returned canonical minimizer k-mer value and applies `Tab64Twisted` tabulation hashing once. That minimizer is reused for L1 lookup and exact L2 bottom-sketch comparison. The tabulation table is deterministic by default and controlled by `--tabSeed`.
+
+The split mode allows query mapping to a small subset of references to reduce RAM. 
+
+Alternative evolutionary models can be used, e.g., binomial model.
 
 ## Quick install and usage 
 On Linux or MacOS (CPU) via bioconda
