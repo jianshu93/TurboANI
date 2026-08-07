@@ -16,7 +16,7 @@ pub use compute_identity::{
 };
 #[cfg(feature = "visual")]
 pub use plot::write_pair_visualization_pdf;
-pub use simd_minimizer::MinimizerMode;
+pub use simd_minimizer::{MinimizerMode, TabulationMode};
 pub use utils::{
     AniConfig, AniResult, MappingCounters, QueryTiming, ReferenceTiming, RunOutput, TimingReport,
     compare_paths, compare_paths_split_with_timing, compare_paths_with_timing,

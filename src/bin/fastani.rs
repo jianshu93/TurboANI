@@ -3,8 +3,9 @@ use std::{env, path::PathBuf};
 use anyhow::Result;
 use clap::{Arg, ArgAction, ArgGroup, Command};
 use turboani::{
-    AniConfig, DistanceModel, MinimizerMode, TimingReport, compare_paths_with_timing,
-    format_timing_summary, read_path_list, write_phylip_matrix, write_results,
+    AniConfig, DistanceModel, MinimizerMode, TabulationMode, TimingReport,
+    compare_paths_with_timing, format_timing_summary, read_path_list, write_phylip_matrix,
+    write_results,
 };
 
 #[derive(Debug)]
@@ -55,6 +56,7 @@ fn main() -> Result<()> {
         window_size: cli.window_size,
         ignore_top_percent: cli.ignore_top_percent,
         tab_hash_seed: 42,
+        tabulation_mode: TabulationMode::Twisted,
         distance_model: DistanceModel::Poisson,
         minimizer_mode: MinimizerMode::FastAni,
         chain: false,

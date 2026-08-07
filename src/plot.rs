@@ -9,7 +9,7 @@ use plotters::coord::Shift;
 use plotters::prelude::*;
 
 use crate::compute_identity::{DistanceTableCache, cmp_f64, compute_ani_results};
-use crate::simd_minimizer::deterministic_tab64_twisted;
+use crate::simd_minimizer::deterministic_tabulation_hasher;
 use crate::sliding_mapper::MappingResult;
 use crate::{AniConfig, AniResult, QueryFileData, ReferenceIndex, map_query_file, read_query_file};
 
@@ -24,7 +24,7 @@ pub fn write_pair_visualization_pdf(
     let ref_path = ref_path.as_ref();
     let output_path = output_path.as_ref();
     let window_size = config.resolved_window_size();
-    let tab_hasher = deterministic_tab64_twisted(config.tab_hash_seed);
+    let tab_hasher = deterministic_tabulation_hasher(config.tab_hash_seed, config.tabulation_mode);
     let ref_paths = vec![ref_path.to_path_buf()];
     let reference_progress = ProgressBar::hidden();
     let (reference, _) = ReferenceIndex::build(

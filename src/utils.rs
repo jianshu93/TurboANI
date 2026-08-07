@@ -11,7 +11,6 @@ use anyhow::{Context, Result};
 use indicatif::ProgressBar;
 use needletail::{Sequence, parse_fastx_file};
 use rayon::prelude::*;
-use tab_hash::Tab64Twisted;
 
 use crate::candidate_window::{PackedMinimizerHit, do_l1_mapping};
 use crate::compute_identity::{
@@ -19,8 +18,9 @@ use crate::compute_identity::{
     recommended_window_size_with_model,
 };
 use crate::simd_minimizer::{
-    Minimizer, MinimizerMode, QuerySeed, deterministic_tab64_twisted, sequence_minimizers,
-    simd_compatible_window_size, splitmix64_permute,
+    Minimizer, MinimizerMode, QuerySeed, TabulationHasher, TabulationMode,
+    deterministic_tabulation_hasher, sequence_minimizers, simd_compatible_window_size,
+    splitmix64_permute,
 };
 use crate::sliding_mapper::{MappingResult, do_l2_mapping};
 
@@ -47,6 +47,7 @@ pub struct AniConfig {
     pub window_size: Option<usize>,
     pub ignore_top_percent: f64,
     pub tab_hash_seed: u64,
+    pub tabulation_mode: TabulationMode,
     pub distance_model: DistanceModel,
     pub minimizer_mode: MinimizerMode,
     pub chain: bool,
@@ -67,6 +68,7 @@ impl Default for AniConfig {
             window_size: None,
             ignore_top_percent: 0.0,
             tab_hash_seed: 42,
+            tabulation_mode: TabulationMode::Twisted,
             distance_model: DistanceModel::Poisson,
             minimizer_mode: MinimizerMode::Simd,
             chain: false,
@@ -451,7 +453,7 @@ fn compare_paths_with_timing_inner(
     config.validate()?;
     let total_start = Instant::now();
     let window_size = config.resolved_window_size();
-    let tab_hasher = deterministic_tab64_twisted(config.tab_hash_seed);
+    let tab_hasher = deterministic_tabulation_hasher(config.tab_hash_seed, config.tabulation_mode);
     let reference_progress = progress_bar(
         config.show_progress,
         usize_to_u64_saturating(ref_paths.len()),
@@ -1025,7 +1027,7 @@ impl ReferenceIndex {
         paths: &[PathBuf],
         config: &AniConfig,
         window_size: usize,
-        tab_hasher: &Tab64Twisted,
+        tab_hasher: &TabulationHasher,
         progress: &ProgressBar,
     ) -> Result<(Self, ReferenceTiming)> {
         anyhow::ensure!(!paths.is_empty(), "at least one reference path is required");
@@ -1134,7 +1136,7 @@ fn read_reference_genome(
     genome_id: usize,
     config: &AniConfig,
     window_size: usize,
-    tab_hasher: &Tab64Twisted,
+    tab_hasher: &TabulationHasher,
 ) -> Result<ReferenceGenomeBuild> {
     let mut reader = parse_fastx_file(path)
         .with_context(|| format!("failed to open reference {}", path.display()))?;
@@ -1208,7 +1210,7 @@ pub(crate) fn map_query_file(
     window_size: usize,
     distance_cache: &DistanceTableCache,
 ) -> Result<(Vec<MappingResult>, MappingCounters)> {
-    let tab_hasher = deterministic_tab64_twisted(config.tab_hash_seed);
+    let tab_hasher = deterministic_tabulation_hasher(config.tab_hash_seed, config.tabulation_mode);
     let per_fragment = query
         .fragments
         .par_iter()
@@ -1239,7 +1241,7 @@ fn map_fragment(
     reference: &ReferenceIndex,
     config: &AniConfig,
     window_size: usize,
-    tab_hasher: &Tab64Twisted,
+    tab_hasher: &TabulationHasher,
     distance_cache: &DistanceTableCache,
 ) -> Result<(Vec<MappingResult>, MappingCounters)> {
     let mut counters = MappingCounters {
@@ -1446,6 +1448,32 @@ mod tests {
             min_identity: 70.0,
             min_fraction: 0.0,
             window_size: Some(10),
+            ..AniConfig::default()
+        };
+
+        let results = compare_paths(&[query.clone()], &[reference.clone()], &config)?;
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].mapped_fragments, 6);
+        assert!(results[0].ani > 99.0, "ANI was {}", results[0].ani);
+        Ok(())
+    }
+
+    #[test]
+    fn identical_genomes_map_with_simple_tabulation() -> Result<()> {
+        let dir = tempdir()?;
+        let query = dir.path().join("query.fa");
+        let reference = dir.path().join("ref.fa");
+        let seq = deterministic_dna(6000);
+        fs::write(&query, format!(">q\n{}\n", seq))?;
+        fs::write(&reference, format!(">r\n{}\n", seq))?;
+
+        let config = AniConfig {
+            kmer_size: 8,
+            fragment_len: 1000,
+            min_identity: 70.0,
+            min_fraction: 0.0,
+            window_size: Some(10),
+            tabulation_mode: TabulationMode::Simple,
             ..AniConfig::default()
         };
 

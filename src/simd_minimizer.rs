@@ -1,6 +1,6 @@
 use anyhow::Result;
 use simd_minimizers::packed_seq::{PackedSeqVec, SeqVec};
-use tab_hash::Tab64Twisted;
+use tab_hash::{Tab64Simple, Tab64Twisted};
 
 use crate::{AniConfig, HashValue, Offset, SeqId};
 
@@ -15,6 +15,35 @@ impl MinimizerMode {
         match self {
             Self::Simd => "simd",
             Self::FastAni => "fastani",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabulationMode {
+    Twisted,
+    Simple,
+}
+
+impl TabulationMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Twisted => "twisted",
+            Self::Simple => "simple",
+        }
+    }
+}
+
+pub(crate) enum TabulationHasher {
+    Twisted(Tab64Twisted),
+    Simple(Tab64Simple),
+}
+
+impl TabulationHasher {
+    fn hash(&self, key: u64) -> u64 {
+        match self {
+            Self::Twisted(hasher) => hasher.hash(key),
+            Self::Simple(hasher) => hasher.hash(key),
         }
     }
 }
@@ -47,7 +76,7 @@ pub(crate) fn sequence_minimizers(
     config: &AniConfig,
     w: usize,
     seq_id: SeqId,
-    tab_hasher: &Tab64Twisted,
+    tab_hasher: &TabulationHasher,
 ) -> Result<Vec<Minimizer>> {
     match config.minimizer_mode {
         MinimizerMode::Simd => {
@@ -62,7 +91,7 @@ fn simd_sequence_minimizers(
     k: usize,
     w: usize,
     seq_id: SeqId,
-    tab_hasher: &Tab64Twisted,
+    tab_hasher: &TabulationHasher,
 ) -> Result<Vec<Minimizer>> {
     if seq.len() < k + w - 1 {
         return Ok(Vec::new());
@@ -205,12 +234,19 @@ fn is_acgt(base: u8) -> bool {
     matches!(base, b'A' | b'C' | b'G' | b'T')
 }
 
-fn minimizer_token(canonical_kmer_value: u64, k: usize, tab_hasher: &Tab64Twisted) -> u64 {
+fn minimizer_token(canonical_kmer_value: u64, k: usize, tab_hasher: &TabulationHasher) -> u64 {
     let key = canonical_kmer_value ^ ((k as u64) << 56) ^ 0xD1B5_4A32_D192_ED03;
     tab_hasher.hash(key)
 }
 
-pub(crate) fn deterministic_tab64_twisted(seed: u64) -> Tab64Twisted {
+pub(crate) fn deterministic_tabulation_hasher(seed: u64, mode: TabulationMode) -> TabulationHasher {
+    match mode {
+        TabulationMode::Twisted => TabulationHasher::Twisted(deterministic_tab64_twisted(seed)),
+        TabulationMode::Simple => TabulationHasher::Simple(deterministic_tab64_simple(seed)),
+    }
+}
+
+fn deterministic_tab64_twisted(seed: u64) -> Tab64Twisted {
     let mut state = seed ^ 0xA076_1D64_78BD_642F;
     let mut table = [[0u128; 256]; 8];
     for row in &mut table {
@@ -221,6 +257,17 @@ pub(crate) fn deterministic_tab64_twisted(seed: u64) -> Tab64Twisted {
         }
     }
     Tab64Twisted::with_table(table)
+}
+
+fn deterministic_tab64_simple(seed: u64) -> Tab64Simple {
+    let mut state = seed ^ 0xA076_1D64_78BD_642F;
+    let mut table = [[0u64; 256]; 8];
+    for row in &mut table {
+        for value in row {
+            *value = splitmix64_next(&mut state);
+        }
+    }
+    Tab64Simple::with_table(table)
 }
 
 fn splitmix64_next(state: &mut u64) -> u64 {

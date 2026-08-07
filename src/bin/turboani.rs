@@ -4,9 +4,9 @@ use anyhow::{Context, Result};
 use clap::{Arg, ArgAction, ArgGroup, Command};
 use log::info;
 use turboani::{
-    AniConfig, DistanceModel, MinimizerMode, TimingReport, compare_paths_split_with_timing,
-    compare_paths_with_timing, format_timing_summary, read_path_list, write_phylip_matrix,
-    write_results,
+    AniConfig, DistanceModel, MinimizerMode, TabulationMode, TimingReport,
+    compare_paths_split_with_timing, compare_paths_with_timing, format_timing_summary,
+    read_path_list, write_phylip_matrix, write_results,
 };
 
 fn main() -> Result<()> {
@@ -146,6 +146,12 @@ fn main() -> Result<()> {
                 .value_parser(clap::value_parser!(u64)),
         )
         .arg(
+            Arg::new("simple-tabulation")
+                .long("simpleTabulation")
+                .help("Use simple tabulation hashing instead of the default twisted tabulation")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
             Arg::new("diag-bin")
                 .long("diagBin")
                 .help("Diagonal clustering bin width in bases")
@@ -228,6 +234,11 @@ fn main() -> Result<()> {
     let window_size = m.get_one::<usize>("window-size").copied();
     let ignore_top_percent = *m.get_one::<f64>("ignore-top-percent").unwrap();
     let tab_seed = *m.get_one::<u64>("tab-seed").unwrap();
+    let tabulation_mode = if m.get_flag("simple-tabulation") {
+        TabulationMode::Simple
+    } else {
+        TabulationMode::Twisted
+    };
     let chainx = m.get_flag("chainx");
     let diag_cluster_bin = *m.get_one::<usize>("diag-bin").unwrap();
     let diag_cluster_band = *m.get_one::<usize>("diag-band").unwrap();
@@ -269,6 +280,7 @@ fn main() -> Result<()> {
         window_size,
         ignore_top_percent,
         tab_hash_seed: tab_seed,
+        tabulation_mode,
         distance_model,
         minimizer_mode: MinimizerMode::Simd,
         chain: chainx,
@@ -281,6 +293,10 @@ fn main() -> Result<()> {
         "using distance model {} ({})",
         config.distance_model.code(),
         config.distance_model.name()
+    );
+    info!(
+        "using {} tabulation hashing",
+        config.tabulation_mode.as_str()
     );
 
     let run = if let Some(split_count) = split_count {
