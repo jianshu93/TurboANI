@@ -9,7 +9,7 @@
 [![Crates.io](https://img.shields.io/crates/v/turboani.svg)](https://crates.io/crates/turboani)
 
 <div align="center">
-  <img width="30%" src ="TurboANI_logo.svg">
+  <img width="37.5%" src ="TurboANI_logo.svg">
 </div>
 
 # TurboANI
