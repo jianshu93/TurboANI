@@ -58,7 +58,7 @@ fn main() -> Result<()> {
         tab_hash_seed: 42,
         tabulation_mode: TabulationMode::Twisted,
         distance_model: DistanceModel::Poisson,
-        minimizer_mode: MinimizerMode::FastAni,
+        minimizer_mode: MinimizerMode::Scalar,
         chain: false,
         diag_cluster_bin: 1000,
         diag_cluster_band: 500,

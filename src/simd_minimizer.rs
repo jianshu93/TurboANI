@@ -1,5 +1,7 @@
 use anyhow::Result;
+use murmur3::murmur3_x64_128;
 use simd_minimizers::packed_seq::{PackedSeqVec, SeqVec};
+use std::io::Cursor;
 use tab_hash::{Tab64Simple, Tab64Twisted};
 
 use crate::{AniConfig, HashValue, Offset, SeqId};
@@ -7,14 +9,14 @@ use crate::{AniConfig, HashValue, Offset, SeqId};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MinimizerMode {
     Simd,
-    FastAni,
+    Scalar,
 }
 
 impl MinimizerMode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Simd => "simd",
-            Self::FastAni => "fastani",
+            Self::Scalar => "scalar",
         }
     }
 }
@@ -82,7 +84,7 @@ pub(crate) fn sequence_minimizers(
         MinimizerMode::Simd => {
             simd_sequence_minimizers(seq, config.kmer_size, w, seq_id, tab_hasher)
         }
-        MinimizerMode::FastAni => fastani_sequence_minimizers(seq, config.kmer_size, w, seq_id),
+        MinimizerMode::Scalar => scalar_sequence_minimizers(seq, config.kmer_size, w, seq_id),
     }
 }
 
@@ -139,13 +141,13 @@ fn simd_sequence_minimizers(
 }
 
 #[derive(Debug, Clone, Copy)]
-struct FastAniDequeEntry {
+struct ScalarDequeEntry {
     hash: HashValue,
     pos: Offset,
     emitted: bool,
 }
 
-fn fastani_sequence_minimizers(
+fn scalar_sequence_minimizers(
     seq: &[u8],
     k: usize,
     w: usize,
@@ -167,14 +169,14 @@ fn fastani_sequence_minimizers(
         .collect::<Vec<_>>();
     let seq_rev = fastani_reverse_complement(&seq_upper);
     let mut result = Vec::new();
-    let mut deque: std::collections::VecDeque<FastAniDequeEntry> =
-        std::collections::VecDeque::new();
+    let mut deque: std::collections::VecDeque<ScalarDequeEntry> = std::collections::VecDeque::new();
     let max_i = seq_upper.len() - k + 1;
 
     for i in 0..max_i {
-        let hash_fwd = murmurhash3_x64_128_low32(&seq_upper[i..i + k], 42) as HashValue;
+        let hash_fwd = murmurhash3_x64_128_low32(&seq_upper[i..i + k], 42)? as HashValue;
         let rc_start = seq_upper.len() - i - k;
-        let hash_bwd = murmurhash3_x64_128_low32(&seq_rev[rc_start..rc_start + k], 42) as HashValue;
+        let hash_bwd =
+            murmurhash3_x64_128_low32(&seq_rev[rc_start..rc_start + k], 42)? as HashValue;
 
         if hash_bwd == hash_fwd {
             continue;
@@ -193,7 +195,7 @@ fn fastani_sequence_minimizers(
             deque.pop_back();
         }
 
-        deque.push_back(FastAniDequeEntry {
+        deque.push_back(ScalarDequeEntry {
             hash: current_hash,
             pos: i,
             emitted: false,
@@ -288,114 +290,6 @@ pub(crate) fn splitmix64_permute(x: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-fn murmurhash3_x64_128_low32(key: &[u8], seed: u32) -> u32 {
-    let len = key.len();
-    let nblocks = len / 16;
-    let mut h1 = seed as u64;
-    let mut h2 = seed as u64;
-    const C1: u64 = 0x87c3_7b91_1142_53d5;
-    const C2: u64 = 0x4cf5_ad43_2745_937f;
-
-    for block in 0..nblocks {
-        let offset = block * 16;
-        let mut k1 = u64::from_le_bytes(key[offset..offset + 8].try_into().unwrap());
-        let mut k2 = u64::from_le_bytes(key[offset + 8..offset + 16].try_into().unwrap());
-
-        k1 = k1.wrapping_mul(C1);
-        k1 = k1.rotate_left(31);
-        k1 = k1.wrapping_mul(C2);
-        h1 ^= k1;
-
-        h1 = h1.rotate_left(27);
-        h1 = h1.wrapping_add(h2);
-        h1 = h1.wrapping_mul(5).wrapping_add(0x52dc_e729);
-
-        k2 = k2.wrapping_mul(C2);
-        k2 = k2.rotate_left(33);
-        k2 = k2.wrapping_mul(C1);
-        h2 ^= k2;
-
-        h2 = h2.rotate_left(31);
-        h2 = h2.wrapping_add(h1);
-        h2 = h2.wrapping_mul(5).wrapping_add(0x3849_5ab5);
-    }
-
-    let tail = &key[nblocks * 16..];
-    let mut k1 = 0u64;
-    let mut k2 = 0u64;
-
-    if tail.len() >= 15 {
-        k2 ^= (tail[14] as u64) << 48;
-    }
-    if tail.len() >= 14 {
-        k2 ^= (tail[13] as u64) << 40;
-    }
-    if tail.len() >= 13 {
-        k2 ^= (tail[12] as u64) << 32;
-    }
-    if tail.len() >= 12 {
-        k2 ^= (tail[11] as u64) << 24;
-    }
-    if tail.len() >= 11 {
-        k2 ^= (tail[10] as u64) << 16;
-    }
-    if tail.len() >= 10 {
-        k2 ^= (tail[9] as u64) << 8;
-    }
-    if tail.len() >= 9 {
-        k2 ^= tail[8] as u64;
-        k2 = k2.wrapping_mul(C2);
-        k2 = k2.rotate_left(33);
-        k2 = k2.wrapping_mul(C1);
-        h2 ^= k2;
-    }
-
-    if tail.len() >= 8 {
-        k1 ^= (tail[7] as u64) << 56;
-    }
-    if tail.len() >= 7 {
-        k1 ^= (tail[6] as u64) << 48;
-    }
-    if tail.len() >= 6 {
-        k1 ^= (tail[5] as u64) << 40;
-    }
-    if tail.len() >= 5 {
-        k1 ^= (tail[4] as u64) << 32;
-    }
-    if tail.len() >= 4 {
-        k1 ^= (tail[3] as u64) << 24;
-    }
-    if tail.len() >= 3 {
-        k1 ^= (tail[2] as u64) << 16;
-    }
-    if tail.len() >= 2 {
-        k1 ^= (tail[1] as u64) << 8;
-    }
-    if !tail.is_empty() {
-        k1 ^= tail[0] as u64;
-        k1 = k1.wrapping_mul(C1);
-        k1 = k1.rotate_left(31);
-        k1 = k1.wrapping_mul(C2);
-        h1 ^= k1;
-    }
-
-    h1 ^= len as u64;
-    h2 ^= len as u64;
-
-    h1 = h1.wrapping_add(h2);
-    h2 = h2.wrapping_add(h1);
-
-    h1 = fmix64(h1);
-    h2 = fmix64(h2);
-
-    h1 = h1.wrapping_add(h2);
-    (h1 & 0xffff_ffff) as u32
-}
-
-fn fmix64(mut k: u64) -> u64 {
-    k ^= k >> 33;
-    k = k.wrapping_mul(0xff51_afd7_ed55_8ccd);
-    k ^= k >> 33;
-    k = k.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
-    k ^ (k >> 33)
+fn murmurhash3_x64_128_low32(key: &[u8], seed: u32) -> Result<u32> {
+    Ok(murmur3_x64_128(&mut Cursor::new(key), seed)? as u32)
 }

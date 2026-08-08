@@ -94,7 +94,7 @@ impl AniConfig {
         });
         match self.minimizer_mode {
             MinimizerMode::Simd => simd_compatible_window_size(self.kmer_size, window_size),
-            MinimizerMode::FastAni => window_size,
+            MinimizerMode::Scalar => window_size,
         }
     }
 
@@ -1423,11 +1423,11 @@ mod tests {
     }
 
     #[test]
-    fn fastani_mode_does_not_adjust_window_size_for_simd() {
+    fn scalar_mode_does_not_adjust_window_size_for_simd() {
         let config = AniConfig {
             kmer_size: 16,
             window_size: Some(17),
-            minimizer_mode: MinimizerMode::FastAni,
+            minimizer_mode: MinimizerMode::Scalar,
             ..AniConfig::default()
         };
         assert_eq!(config.resolved_window_size(), 17);

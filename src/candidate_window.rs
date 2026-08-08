@@ -57,7 +57,7 @@ pub(crate) fn do_l1_mapping(
     reference: &ReferenceIndex,
     config: &AniConfig,
 ) -> (Vec<L1Candidate>, L1Stats) {
-    if config.minimizer_mode == MinimizerMode::FastAni {
+    if config.minimizer_mode == MinimizerMode::Scalar {
         return do_l1_mapping_fastani_exact(query, reference, config);
     }
 
