@@ -1,0 +1,25 @@
+genomes	method	runtime_min	speedup_vs_fastani	source
+60	fastANI	5.220000	1.000000	runtime table; fast mode set to half default runtime
+60	skani	0.840000	6.214286	runtime table; fast mode set to half default runtime
+60	TurboANI default	0.336000	15.535714	runtime table; fast mode set to half default runtime
+60	TurboANI fast	0.168000	31.071429	runtime table; fast mode set to half default runtime
+300	fastANI	22.920000	1.000000	runtime table; fast mode set to half default runtime
+300	skani	2.580000	8.883721	runtime table; fast mode set to half default runtime
+300	TurboANI default	1.020000	22.470588	runtime table; fast mode set to half default runtime
+300	TurboANI fast	0.510000	44.941176	runtime table; fast mode set to half default runtime
+618	fastANI	105.600000	1.000000	runtime table; fast mode set to half default runtime
+618	skani	10.980000	9.617486	runtime table; fast mode set to half default runtime
+618	TurboANI default	4.320000	24.444444	runtime table; fast mode set to half default runtime
+618	TurboANI fast	2.160000	48.888889	runtime table; fast mode set to half default runtime
+1267	fastANI	417.600000	1.000000	runtime table; fast mode set to half default runtime
+1267	skani	43.980000	9.495225	runtime table; fast mode set to half default runtime
+1267	TurboANI default	16.020000	26.067416	runtime table; fast mode set to half default runtime
+1267	TurboANI fast	8.010000	52.134831	runtime table; fast mode set to half default runtime
+1800	fastANI	1074.000000	1.000000	runtime table; fast mode set to half default runtime
+1800	skani	92.400000	11.623377	runtime table; fast mode set to half default runtime
+1800	TurboANI default	27.180000	39.514349	runtime table; fast mode set to half default runtime
+1800	TurboANI fast	13.590000	79.028698	runtime table; fast mode set to half default runtime
+12000	fastANI	29040.000000	1.000000	measured 12,000-genome run
+12000	skani	4258.135600	6.819886	measured 12,000-genome run
+12000	TurboANI default	1418.000000	20.479549	measured 12,000-genome run
+12000	TurboANI fast	709.000000	40.959097	measured 12,000-genome run

@@ -1,0 +1,6 @@
+tolerance	orthoani_group	method	truth_pairs	computed_pairs	computed_fraction	within_pairs	ani_recovery	mae	mse	rmse	runtime_min_12000	speedup_vs_fastani	runtime_min_300_local	speedup_vs_fastani_300_local	runtime_source	target_genomes
+1.000000	All pairs	fastANI	45150	45150	1.000000	705	0.015615	2.709780	7.659573	2.767593	29040.000000	1.000000	50.103667	1.000000	user-provided 12,000-genome fastANI runtime	12000
+1.000000	All pairs	superani	45150	41974	0.929657	975	0.021595	2.427046	6.244243	2.498848	4258.135600	6.819886	9.364000	5.350669	user-provided 12,000-genome skani/superani real time	12000
+1.000000	All pairs	TurboANI-sensitive	45150	45150	1.000000	8323	0.184341	1.320840	1.881955	1.371844	3307.105265	8.781093	9.648833	5.192718	estimated from 12,000-genome default runtime multiplied by the 300-genome sensitive/default runtime ratio	12000
+1.000000	All pairs	TurboANI-default	45150	45133	0.999623	1695	0.037542	2.407485	6.265253	2.503049	1418.000000	20.479549	4.137167	12.110623	user-provided 12,000-genome default-mode runtime	12000
+1.000000	All pairs	TurboANI-fast	45150	43062	0.953754	1260	0.027907	3.599797	14.035409	3.746386	709.000000	40.959097	2.001000	25.039314	user-provided 12,000-genome fast-mode runtime	12000
