@@ -168,7 +168,7 @@ query_path  reference_path  ani  mapped_fragments  total_query_fragments
 ```
 
 ## Separate fastANI binary
-FastANI compatibility mode is a separate binary that implements the original FastANI algorithm:
+FastANI compatibility mode is a separate binary that implements the original FastANI algorithm and additional experiments such as minmer Jaccard estimator:
 
 ```bash
 ./target/release/fastani -- \
