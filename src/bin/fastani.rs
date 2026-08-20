@@ -24,6 +24,7 @@ struct Cli {
     window_size: Option<usize>,
     ignore_top_percent: f64,
     matrix: bool,
+    minmer: bool,
     #[cfg(feature = "visual")]
     visualize: Option<PathBuf>,
     threads: usize,
@@ -58,7 +59,11 @@ fn main() -> Result<()> {
         tab_hash_seed: 42,
         tabulation_mode: TabulationMode::Twisted,
         distance_model: DistanceModel::Poisson,
-        minimizer_mode: MinimizerMode::Scalar,
+        minimizer_mode: if cli.minmer {
+            MinimizerMode::ScalarMinmer
+        } else {
+            MinimizerMode::Scalar
+        },
         chain: false,
         diag_cluster_bin: 1000,
         diag_cluster_band: 500,
@@ -190,6 +195,12 @@ fn parse_cli() -> Cli {
                 .help("Also write a Phylip lower-triangular matrix to <output>.matrix; reciprocal ANI values are averaged")
                 .action(ArgAction::SetTrue),
         )
+        .arg(
+            Arg::new("minmer")
+                .long("minmer")
+                .help("Minmer mode")
+                .action(ArgAction::SetTrue),
+        )
         ;
     let m = add_visualize_arg(m)
         .arg(
@@ -217,6 +228,7 @@ fn parse_cli() -> Cli {
         window_size: m.get_one::<usize>("window-size").copied(),
         ignore_top_percent: *m.get_one::<f64>("ignore-top-percent").unwrap(),
         matrix: m.get_flag("matrix"),
+        minmer: m.get_flag("minmer"),
         #[cfg(feature = "visual")]
         visualize: m.get_one::<PathBuf>("visualize").cloned(),
         threads: *m.get_one::<usize>("threads").unwrap(),

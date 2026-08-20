@@ -3,7 +3,7 @@ use std::time::Instant;
 use anyhow::Result;
 
 use crate::candidate_window::L1Candidate;
-use crate::simd_minimizer::Minimizer;
+use crate::simd_minimizer::{Minimizer, MinimizerMode};
 use crate::{AniConfig, HashValue, Offset, QuerySketch, ReferenceIndex, SeqId};
 
 #[derive(Debug, Clone)]
@@ -303,7 +303,193 @@ pub(crate) fn do_l2_mapping(
     config: &AniConfig,
     window_size: usize,
 ) -> Result<(Option<MappingResult>, L2Stats)> {
+    if config.minimizer_mode == MinimizerMode::ScalarMinmer {
+        return do_l2_mapping_minmer_intervals(query, candidate, reference, config);
+    }
     do_l2_mapping_bitset_exact(query, candidate, reference, config, window_size)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct MinmerL2Event {
+    pos: Offset,
+    is_start: bool,
+    coord_idx: usize,
+}
+
+fn do_l2_mapping_minmer_intervals(
+    query: &QuerySketch,
+    candidate: L1Candidate,
+    reference: &ReferenceIndex,
+    config: &AniConfig,
+) -> Result<(Option<MappingResult>, L2Stats)> {
+    let mut stats = L2Stats::default();
+    let Some(window_kmers) = query.len.checked_sub(config.kmer_size).map(|v| v + 1) else {
+        return Ok((None, stats));
+    };
+    if window_kmers == 0
+        || query.unique_hashes.is_empty()
+        || candidate.range_end < candidate.range_start
+    {
+        return Ok((None, stats));
+    }
+
+    let contig_range = reference.contig_minmer_bounds(candidate.seq_id);
+    if contig_range.is_empty() {
+        return Ok((None, stats));
+    }
+
+    let intervals = &reference.minmer_intervals[contig_range];
+    let candidate_start = candidate.range_start;
+    let candidate_end_exclusive = candidate.range_end.saturating_add(1);
+    let lower_start = candidate_start.saturating_sub(window_kmers);
+    let scan_start = intervals.partition_point(|iv| iv.start < lower_start);
+
+    let mut overlapping = Vec::new();
+    for interval in &intervals[scan_start..] {
+        if interval.start >= candidate_end_exclusive {
+            break;
+        }
+        if interval.end <= candidate_start {
+            continue;
+        }
+        overlapping.push(*interval);
+    }
+
+    if overlapping.is_empty() {
+        return Ok((None, stats));
+    }
+
+    let mut coords = Vec::with_capacity(query.unique_hashes.len() + overlapping.len());
+    coords.extend_from_slice(&query.unique_hashes);
+    coords.extend(overlapping.iter().map(|iv| iv.hash));
+    coords.sort_unstable();
+    coords.dedup();
+    stats.coord_count = coords.len();
+    stats.reference_minimizers = overlapping.len();
+    stats.windows = (candidate_end_exclusive - candidate_start) as u64;
+
+    let mut slide_map = BitsetBottomSketchSlideMapper::new(&query.unique_hashes, &coords);
+    let mut events = Vec::new();
+    for interval in overlapping {
+        let coord_idx = coords
+            .binary_search(&interval.hash)
+            .expect("minmer interval hash must be in local coordinate universe");
+        if interval.start <= candidate_start && interval.end > candidate_start {
+            slide_map.insert_ref(coord_idx);
+        } else if interval.start > candidate_start && interval.start < candidate_end_exclusive {
+            events.push(MinmerL2Event {
+                pos: interval.start,
+                is_start: true,
+                coord_idx,
+            });
+        }
+        if interval.end > candidate_start && interval.end < candidate_end_exclusive {
+            events.push(MinmerL2Event {
+                pos: interval.end,
+                is_start: false,
+                coord_idx,
+            });
+        }
+    }
+    events.sort_unstable();
+
+    let mut best_shared = 0usize;
+    let mut first_best_pos: Option<Offset> = None;
+    let mut last_best_pos: Option<Offset> = None;
+    update_minmer_best(
+        &slide_map,
+        candidate_start,
+        next_event_or_end(&events, 0, candidate_end_exclusive).saturating_sub(1),
+        &mut best_shared,
+        &mut first_best_pos,
+        &mut last_best_pos,
+    );
+
+    let mut idx = 0usize;
+    while idx < events.len() {
+        let pos = events[idx].pos;
+        while idx < events.len() && events[idx].pos == pos {
+            if events[idx].is_start {
+                slide_map.insert_ref(events[idx].coord_idx);
+            } else {
+                slide_map.delete_ref(events[idx].coord_idx);
+            }
+            idx += 1;
+        }
+        let span_end = next_event_or_end(&events, idx, candidate_end_exclusive).saturating_sub(1);
+        update_minmer_best(
+            &slide_map,
+            pos,
+            span_end,
+            &mut best_shared,
+            &mut first_best_pos,
+            &mut last_best_pos,
+        );
+    }
+
+    if first_best_pos.is_none() {
+        return Ok((None, stats));
+    }
+
+    let distance_start = Instant::now();
+    let distance = query
+        .distance_table
+        .get(best_shared)
+        .expect("best shared count must fit query distance table");
+    let identity = distance.identity;
+    let identity_upper_bound = distance.identity_upper_bound;
+    stats.distance_ns += distance_start.elapsed().as_nanos();
+
+    if identity_upper_bound < config.min_identity {
+        return Ok((None, stats));
+    }
+
+    let first = first_best_pos.unwrap();
+    let last = last_best_pos.unwrap_or(first);
+    let mean_start = (first + last) / 2;
+
+    Ok((
+        Some(MappingResult {
+            query_seq_id: query.fragment_id,
+            query_len: query.len,
+            ref_seq_id: candidate.seq_id,
+            ref_start: mean_start,
+            ref_end: mean_start + query.len - 1,
+            identity,
+            identity_upper_bound,
+            conserved_sketches: best_shared,
+            sketch_size: query.unique_hashes.len(),
+        }),
+        stats,
+    ))
+}
+
+fn next_event_or_end(events: &[MinmerL2Event], idx: usize, end: Offset) -> Offset {
+    events.get(idx).map(|event| event.pos).unwrap_or(end)
+}
+
+fn update_minmer_best(
+    slide_map: &BitsetBottomSketchSlideMapper,
+    span_start: Offset,
+    span_end: Offset,
+    best_shared: &mut usize,
+    first_best_pos: &mut Option<Offset>,
+    last_best_pos: &mut Option<Offset>,
+) {
+    if span_end < span_start {
+        return;
+    }
+    let shared = slide_map.shared();
+    if shared > *best_shared {
+        *best_shared = shared;
+        *first_best_pos = Some(span_start);
+        *last_best_pos = Some(span_end);
+    } else if shared == *best_shared {
+        if first_best_pos.is_none() {
+            *first_best_pos = Some(span_start);
+        }
+        *last_best_pos = Some(span_end);
+    }
 }
 
 fn do_l2_mapping_bitset_exact(

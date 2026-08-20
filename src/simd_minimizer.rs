@@ -1,6 +1,7 @@
 use anyhow::Result;
 use murmur3::murmur3_x64_128;
 use simd_minimizers::packed_seq::{PackedSeqVec, SeqVec};
+use std::collections::{BTreeSet, HashMap};
 use std::io::Cursor;
 use tab_hash::{Tab64Simple, Tab64Twisted};
 
@@ -10,6 +11,7 @@ use crate::{AniConfig, HashValue, Offset, SeqId};
 pub enum MinimizerMode {
     Simd,
     Scalar,
+    ScalarMinmer,
 }
 
 impl MinimizerMode {
@@ -17,6 +19,7 @@ impl MinimizerMode {
         match self {
             Self::Simd => "simd",
             Self::Scalar => "scalar",
+            Self::ScalarMinmer => "scalar-minmer",
         }
     }
 }
@@ -68,6 +71,14 @@ pub(crate) struct Minimizer {
 }
 
 #[derive(Debug, Clone, Copy)]
+pub(crate) struct MinmerInterval {
+    pub(crate) hash: HashValue,
+    pub(crate) seq_id: SeqId,
+    pub(crate) start: Offset,
+    pub(crate) end: Offset,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct QuerySeed {
     pub(crate) hash: HashValue,
     pub(crate) qpos: Offset,
@@ -85,6 +96,12 @@ pub(crate) fn sequence_minimizers(
             simd_sequence_minimizers(seq, config.kmer_size, w, seq_id, tab_hasher)
         }
         MinimizerMode::Scalar => scalar_sequence_minimizers(seq, config.kmer_size, w, seq_id),
+        MinimizerMode::ScalarMinmer => scalar_sequence_minmer_query_sketch(
+            seq,
+            config.kmer_size,
+            config.resolved_minmer_sketch_size(),
+            seq_id,
+        ),
     }
 }
 
@@ -217,6 +234,312 @@ fn scalar_sequence_minimizers(
     }
 
     Ok(result)
+}
+
+pub(crate) fn scalar_sequence_minmer_query_sketch(
+    seq: &[u8],
+    k: usize,
+    sketch_size: usize,
+    seq_id: SeqId,
+) -> Result<Vec<Minimizer>> {
+    if seq.len() < k || sketch_size == 0 {
+        return Ok(Vec::new());
+    }
+
+    let seq_upper = uppercase_ascii(seq);
+    let seq_rev = fastani_reverse_complement(&seq_upper);
+    let mut sketch = Vec::new();
+    for (run_start, run_end) in acgt_runs(&seq_upper) {
+        if run_end - run_start < k {
+            continue;
+        }
+        for pos in run_start..=(run_end - k) {
+            if let Some(hash) = canonical_murmur_hash_at(&seq_upper, &seq_rev, pos, k)? {
+                sketch.push(Minimizer {
+                    hash,
+                    seq_id,
+                    wpos: pos,
+                });
+            }
+        }
+    }
+
+    sketch.sort_unstable_by_key(|m| (m.hash, m.wpos));
+    sketch.dedup_by_key(|m| m.hash);
+    sketch.truncate(sketch_size);
+    sketch.sort_unstable_by_key(|m| m.hash);
+    Ok(sketch)
+}
+
+pub(crate) fn scalar_sequence_minmer_intervals(
+    seq: &[u8],
+    k: usize,
+    window_kmers: usize,
+    sketch_size: usize,
+    seq_id: SeqId,
+) -> Result<Vec<MinmerInterval>> {
+    if seq.len() < k || window_kmers == 0 || sketch_size == 0 {
+        return Ok(Vec::new());
+    }
+
+    let seq_upper = uppercase_ascii(seq);
+    let seq_rev = fastani_reverse_complement(&seq_upper);
+    let mut intervals = Vec::new();
+    for (run_start, run_end) in acgt_runs(&seq_upper) {
+        if run_end - run_start < k + window_kmers - 1 {
+            continue;
+        }
+
+        let mut hashes = Vec::with_capacity(run_end - run_start - k + 1);
+        for pos in run_start..=(run_end - k) {
+            if let Some(hash) = canonical_murmur_hash_at(&seq_upper, &seq_rev, pos, k)? {
+                hashes.push(hash);
+            }
+        }
+        intervals.extend(minmer_intervals_for_run(
+            &hashes,
+            run_start,
+            seq_id,
+            window_kmers,
+            sketch_size,
+        ));
+    }
+
+    intervals.sort_unstable_by_key(|iv| (iv.seq_id, iv.start, iv.end, iv.hash));
+    Ok(intervals)
+}
+
+fn minmer_intervals_for_run(
+    hashes: &[HashValue],
+    run_start: Offset,
+    seq_id: SeqId,
+    window_kmers: usize,
+    sketch_size: usize,
+) -> Vec<MinmerInterval> {
+    if hashes.len() < window_kmers {
+        return Vec::new();
+    }
+
+    let sketch_size = sketch_size.min(window_kmers);
+    let last_window_start = hashes.len() - window_kmers;
+    let mut state = RollingBottomSet::new(sketch_size);
+    for &hash in &hashes[..window_kmers] {
+        state.initialize_insert(hash);
+    }
+    state.finish_initialization();
+
+    let mut intervals = Vec::new();
+    let mut open = HashMap::new();
+    for hash in state.low_hashes() {
+        open.insert(hash, run_start);
+    }
+
+    for window_start in 1..=last_window_start {
+        let event_pos = run_start + window_start;
+        state.remove_hash(
+            hashes[window_start - 1],
+            event_pos,
+            &mut open,
+            &mut intervals,
+            seq_id,
+        );
+        state.insert_hash(
+            hashes[window_start + window_kmers - 1],
+            event_pos,
+            &mut open,
+            &mut intervals,
+            seq_id,
+        );
+    }
+
+    let final_end = run_start + last_window_start + 1;
+    for (hash, start) in open {
+        if start < final_end {
+            intervals.push(MinmerInterval {
+                hash,
+                seq_id,
+                start,
+                end: final_end,
+            });
+        }
+    }
+    intervals
+}
+
+struct RollingBottomSet {
+    sketch_size: usize,
+    counts: HashMap<HashValue, usize>,
+    low: BTreeSet<HashValue>,
+    high: BTreeSet<HashValue>,
+}
+
+impl RollingBottomSet {
+    fn new(sketch_size: usize) -> Self {
+        Self {
+            sketch_size,
+            counts: HashMap::new(),
+            low: BTreeSet::new(),
+            high: BTreeSet::new(),
+        }
+    }
+
+    fn initialize_insert(&mut self, hash: HashValue) {
+        *self.counts.entry(hash).or_insert(0) += 1;
+    }
+
+    fn finish_initialization(&mut self) {
+        let mut unique = self.counts.keys().copied().collect::<Vec<_>>();
+        unique.sort_unstable();
+        for hash in unique.into_iter().take(self.sketch_size) {
+            self.low.insert(hash);
+        }
+        for hash in self.counts.keys().copied().collect::<Vec<_>>() {
+            if !self.low.contains(&hash) {
+                self.high.insert(hash);
+            }
+        }
+    }
+
+    fn low_hashes(&self) -> impl Iterator<Item = HashValue> + '_ {
+        self.low.iter().copied()
+    }
+
+    fn insert_hash(
+        &mut self,
+        hash: HashValue,
+        pos: Offset,
+        open: &mut HashMap<HashValue, Offset>,
+        intervals: &mut Vec<MinmerInterval>,
+        seq_id: SeqId,
+    ) {
+        let count = self.counts.entry(hash).or_insert(0);
+        if *count > 0 {
+            *count += 1;
+            return;
+        }
+        *count = 1;
+
+        if self.low.len() < self.sketch_size {
+            self.low.insert(hash);
+            open_interval(hash, pos, open);
+            return;
+        }
+
+        if let Some(&max_low) = self.low.iter().next_back() {
+            if hash < max_low {
+                self.low.remove(&max_low);
+                self.high.insert(max_low);
+                close_interval(max_low, pos, open, intervals, seq_id);
+                self.low.insert(hash);
+                open_interval(hash, pos, open);
+            } else {
+                self.high.insert(hash);
+            }
+        } else {
+            self.low.insert(hash);
+            open_interval(hash, pos, open);
+        }
+    }
+
+    fn remove_hash(
+        &mut self,
+        hash: HashValue,
+        pos: Offset,
+        open: &mut HashMap<HashValue, Offset>,
+        intervals: &mut Vec<MinmerInterval>,
+        seq_id: SeqId,
+    ) {
+        let Some(count) = self.counts.get_mut(&hash) else {
+            return;
+        };
+        *count -= 1;
+        if *count > 0 {
+            return;
+        }
+        self.counts.remove(&hash);
+
+        if self.low.remove(&hash) {
+            close_interval(hash, pos, open, intervals, seq_id);
+            if let Some(next_high) = self.high.iter().next().copied() {
+                self.high.remove(&next_high);
+                self.low.insert(next_high);
+                open_interval(next_high, pos, open);
+            }
+        } else {
+            self.high.remove(&hash);
+        }
+    }
+}
+
+fn open_interval(hash: HashValue, start: Offset, open: &mut HashMap<HashValue, Offset>) {
+    open.entry(hash).or_insert(start);
+}
+
+fn close_interval(
+    hash: HashValue,
+    end: Offset,
+    open: &mut HashMap<HashValue, Offset>,
+    intervals: &mut Vec<MinmerInterval>,
+    seq_id: SeqId,
+) {
+    if let Some(start) = open.remove(&hash) {
+        if start < end {
+            intervals.push(MinmerInterval {
+                hash,
+                seq_id,
+                start,
+                end,
+            });
+        }
+    }
+}
+
+fn uppercase_ascii(seq: &[u8]) -> Vec<u8> {
+    seq.iter()
+        .map(|&base| {
+            if base.is_ascii_lowercase() {
+                base.to_ascii_uppercase()
+            } else {
+                base
+            }
+        })
+        .collect()
+}
+
+fn acgt_runs(seq: &[u8]) -> Vec<(usize, usize)> {
+    let mut runs = Vec::new();
+    let mut start = 0usize;
+    while start < seq.len() {
+        while start < seq.len() && !is_acgt(seq[start]) {
+            start += 1;
+        }
+        if start >= seq.len() {
+            break;
+        }
+        let mut end = start;
+        while end < seq.len() && is_acgt(seq[end]) {
+            end += 1;
+        }
+        runs.push((start, end));
+        start = end;
+    }
+    runs
+}
+
+fn canonical_murmur_hash_at(
+    seq_upper: &[u8],
+    seq_rev: &[u8],
+    pos: usize,
+    k: usize,
+) -> Result<Option<HashValue>> {
+    let hash_fwd = murmurhash3_x64_128_low32(&seq_upper[pos..pos + k], 42)? as HashValue;
+    let rc_start = seq_upper.len() - pos - k;
+    let hash_bwd = murmurhash3_x64_128_low32(&seq_rev[rc_start..rc_start + k], 42)? as HashValue;
+    if hash_bwd == hash_fwd {
+        Ok(None)
+    } else {
+        Ok(Some(hash_fwd.min(hash_bwd)))
+    }
 }
 
 fn fastani_reverse_complement(seq: &[u8]) -> Vec<u8> {

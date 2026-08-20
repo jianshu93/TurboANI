@@ -15,12 +15,12 @@ use rayon::prelude::*;
 use crate::candidate_window::{PackedMinimizerHit, do_l1_mapping};
 use crate::compute_identity::{
     DistanceEstimate, DistanceModel, DistanceTableCache, compute_ani_results,
-    recommended_window_size_with_model,
+    recommended_mashmap3_sketch_size_with_model, recommended_window_size_with_model,
 };
 use crate::simd_minimizer::{
-    Minimizer, MinimizerMode, QuerySeed, TabulationHasher, TabulationMode,
-    deterministic_tabulation_hasher, sequence_minimizers, simd_compatible_window_size,
-    splitmix64_permute,
+    Minimizer, MinimizerMode, MinmerInterval, QuerySeed, TabulationHasher, TabulationMode,
+    deterministic_tabulation_hasher, scalar_sequence_minmer_intervals, sequence_minimizers,
+    simd_compatible_window_size, splitmix64_permute,
 };
 use crate::sliding_mapper::{MappingResult, do_l2_mapping};
 
@@ -94,8 +94,26 @@ impl AniConfig {
         });
         match self.minimizer_mode {
             MinimizerMode::Simd => simd_compatible_window_size(self.kmer_size, window_size),
-            MinimizerMode::Scalar => window_size,
+            MinimizerMode::Scalar | MinimizerMode::ScalarMinmer => window_size,
         }
+    }
+
+    pub(crate) fn resolved_minmer_sketch_size(&self) -> usize {
+        let kmer_count = self
+            .fragment_len
+            .saturating_sub(self.kmer_size)
+            .saturating_add(1)
+            .max(1);
+        recommended_mashmap3_sketch_size_with_model(
+            self.p_value,
+            self.kmer_size,
+            4,
+            self.min_identity,
+            self.fragment_len,
+            self.reference_size,
+            self.distance_model,
+        )
+        .clamp(1, kmer_count)
     }
 
     pub(crate) fn validate(&self) -> Result<()> {
@@ -267,6 +285,79 @@ pub(crate) struct CompactLookupIndex {
     range_slots: Vec<u32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PackedMinmerInterval {
+    pub(crate) seq_id: u32,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+impl PackedMinmerInterval {
+    pub(crate) fn new(seq_id: SeqId, start: Offset, end: Offset) -> Result<Self> {
+        Ok(Self {
+            seq_id: u32_checked(seq_id, "reference contig id")?,
+            start: u32_checked(start, "reference minmer interval start")?,
+            end: u32_checked(end, "reference minmer interval end")?,
+        })
+    }
+
+    pub(crate) fn seq_id(self) -> SeqId {
+        self.seq_id as usize
+    }
+
+    pub(crate) fn start(self) -> Offset {
+        self.start as usize
+    }
+
+    pub(crate) fn end(self) -> Offset {
+        self.end as usize
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct MinmerIntervalLookup {
+    map: HashMap<HashValue, Vec<PackedMinmerInterval>>,
+}
+
+impl MinmerIntervalLookup {
+    fn from_intervals(intervals: &[MinmerInterval]) -> Result<Self> {
+        let mut map: HashMap<HashValue, Vec<PackedMinmerInterval>> = HashMap::new();
+        for interval in intervals {
+            map.entry(interval.hash)
+                .or_default()
+                .push(PackedMinmerInterval::new(
+                    interval.seq_id,
+                    interval.start,
+                    interval.end,
+                )?);
+        }
+        Ok(Self { map })
+    }
+
+    pub(crate) fn get(&self, hash: HashValue) -> Option<&[PackedMinmerInterval]> {
+        self.map.get(&hash).map(Vec::as_slice)
+    }
+
+    fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    fn frequency_threshold(&self, ignore_top_percent: f64) -> usize {
+        if ignore_top_percent <= 0.0 || self.map.is_empty() {
+            return usize::MAX;
+        }
+
+        let mut counts = self.map.values().map(Vec::len).collect::<Vec<_>>();
+        counts.sort_unstable_by(|a, b| b.cmp(a));
+        let to_ignore = ((counts.len() as f64) * ignore_top_percent / 100.0).floor() as usize;
+        if to_ignore == 0 {
+            usize::MAX
+        } else {
+            counts[to_ignore.saturating_sub(1)]
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct GenomeInfo {
     pub(crate) path: PathBuf,
@@ -285,6 +376,7 @@ struct ReferenceContigBuild {
     name: String,
     len: usize,
     minimizers: Vec<Minimizer>,
+    minmer_intervals: Vec<MinmerInterval>,
 }
 
 #[derive(Debug)]
@@ -294,6 +386,9 @@ pub(crate) struct ReferenceIndex {
     pub(crate) minimizers: Vec<Minimizer>,
     pub(crate) contig_ranges: Vec<std::ops::Range<usize>>,
     pub(crate) lookup: CompactLookupIndex,
+    pub(crate) minmer_intervals: Vec<MinmerInterval>,
+    pub(crate) contig_minmer_ranges: Vec<std::ops::Range<usize>>,
+    pub(crate) minmer_lookup: Option<MinmerIntervalLookup>,
     pub(crate) freq_threshold: usize,
 }
 
@@ -1052,6 +1147,7 @@ impl ReferenceIndex {
         let mut genomes = Vec::with_capacity(paths.len());
         let mut contigs = Vec::new();
         let mut minimizers = Vec::new();
+        let mut minmer_intervals = Vec::new();
 
         for build in builds {
             genomes.push(build.genome);
@@ -1066,6 +1162,10 @@ impl ReferenceIndex {
                     minimizer.seq_id = seq_id;
                     minimizer
                 }));
+                minmer_intervals.extend(contig.minmer_intervals.into_iter().map(|mut interval| {
+                    interval.seq_id = seq_id;
+                    interval
+                }));
             }
         }
         let assemble_wall_ns = assemble_start.elapsed().as_nanos();
@@ -1076,7 +1176,16 @@ impl ReferenceIndex {
 
         let lookup_start = Instant::now();
         let lookup = CompactLookupIndex::from_hash_sorted_minimizers(&minimizers)?;
-        let freq_threshold = lookup.frequency_threshold(config.ignore_top_percent);
+        let minmer_lookup = if config.minimizer_mode == MinimizerMode::ScalarMinmer {
+            Some(MinmerIntervalLookup::from_intervals(&minmer_intervals)?)
+        } else {
+            None
+        };
+        let freq_threshold = if let Some(minmer_lookup) = &minmer_lookup {
+            minmer_lookup.frequency_threshold(config.ignore_top_percent)
+        } else {
+            lookup.frequency_threshold(config.ignore_top_percent)
+        };
         let lookup_wall_ns = lookup_start.elapsed().as_nanos();
 
         let sort_position_start = Instant::now();
@@ -1092,6 +1201,18 @@ impl ReferenceIndex {
             contig_ranges[seq_id] = start..end;
             start = end;
         }
+        minmer_intervals.sort_unstable_by_key(|iv| (iv.seq_id, iv.start, iv.end, iv.hash));
+        let mut contig_minmer_ranges = vec![0..0; contigs.len()];
+        let mut minmer_start = 0usize;
+        while minmer_start < minmer_intervals.len() {
+            let seq_id = minmer_intervals[minmer_start].seq_id;
+            let mut end = minmer_start + 1;
+            while end < minmer_intervals.len() && minmer_intervals[end].seq_id == seq_id {
+                end += 1;
+            }
+            contig_minmer_ranges[seq_id] = minmer_start..end;
+            minmer_start = end;
+        }
         let sort_wall_ns = sort_hash_wall_ns + sort_position_start.elapsed().as_nanos();
 
         let timing = ReferenceTiming {
@@ -1102,8 +1223,15 @@ impl ReferenceIndex {
             lookup_wall_ns,
             genomes: genomes.len(),
             contigs: contigs.len(),
-            minimizers: minimizers.len(),
-            lookup_keys: lookup.len(),
+            minimizers: if config.minimizer_mode == MinimizerMode::ScalarMinmer {
+                minmer_intervals.len()
+            } else {
+                minimizers.len()
+            },
+            lookup_keys: minmer_lookup
+                .as_ref()
+                .map(MinmerIntervalLookup::len)
+                .unwrap_or_else(|| lookup.len()),
             freq_threshold,
         };
 
@@ -1114,6 +1242,9 @@ impl ReferenceIndex {
                 minimizers,
                 contig_ranges,
                 lookup,
+                minmer_intervals,
+                contig_minmer_ranges,
+                minmer_lookup,
                 freq_threshold,
             },
             timing,
@@ -1128,6 +1259,10 @@ impl ReferenceIndex {
 
     pub(crate) fn contig_minimizer_bounds(&self, seq_id: SeqId) -> std::ops::Range<usize> {
         self.contig_ranges[seq_id].clone()
+    }
+
+    pub(crate) fn contig_minmer_bounds(&self, seq_id: SeqId) -> std::ops::Range<usize> {
+        self.contig_minmer_ranges[seq_id].clone()
     }
 }
 
@@ -1148,12 +1283,31 @@ fn read_reference_genome(
         let name = String::from_utf8_lossy(record.id()).into_owned();
         let seq = record.normalize(false);
         genome_len += seq.len();
-        let minimizers = sequence_minimizers(seq.as_ref(), config, window_size, 0, tab_hasher)?;
+        let (minimizers, minmer_intervals) = if config.minimizer_mode == MinimizerMode::ScalarMinmer
+        {
+            let window_kmers = config.fragment_len.saturating_sub(config.kmer_size) + 1;
+            (
+                Vec::new(),
+                scalar_sequence_minmer_intervals(
+                    seq.as_ref(),
+                    config.kmer_size,
+                    window_kmers,
+                    config.resolved_minmer_sketch_size(),
+                    0,
+                )?,
+            )
+        } else {
+            (
+                sequence_minimizers(seq.as_ref(), config, window_size, 0, tab_hasher)?,
+                Vec::new(),
+            )
+        };
 
         contigs.push(ReferenceContigBuild {
             name,
             len: seq.len(),
             minimizers,
+            minmer_intervals,
         });
     }
 
@@ -1647,6 +1801,9 @@ mod tests {
                 hits: Vec::new(),
                 range_slots: Vec::new(),
             },
+            minmer_intervals: Vec::new(),
+            contig_minmer_ranges: vec![0..0],
+            minmer_lookup: None,
             freq_threshold: usize::MAX,
         };
         let config = AniConfig {

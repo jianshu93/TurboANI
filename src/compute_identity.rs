@@ -318,6 +318,22 @@ pub fn estimate_minimum_hits_relaxed_with_model(
     percent_identity: f64,
     model: DistanceModel,
 ) -> usize {
+    estimate_minimum_hits_relaxed_with_confidence_and_model(
+        sketch_size,
+        k,
+        percent_identity,
+        0.9,
+        model,
+    )
+}
+
+pub fn estimate_minimum_hits_relaxed_with_confidence_and_model(
+    sketch_size: usize,
+    k: usize,
+    percent_identity: f64,
+    confidence_interval: f64,
+    model: DistanceModel,
+) -> usize {
     if sketch_size == 0 {
         return 0;
     }
@@ -327,7 +343,7 @@ pub fn estimate_minimum_hits_relaxed_with_model(
     for i in (0..=strict).rev() {
         let jaccard = i as f64 / sketch_size as f64;
         let d = model.jaccard_to_distance(jaccard, k);
-        let d_lower = md_lower_bound_with_model(d, sketch_size, k, 0.9, model);
+        let d_lower = md_lower_bound_with_model(d, sketch_size, k, confidence_interval, model);
         let upper_identity = 100.0 * (1.0 - d_lower);
         if upper_identity >= percent_identity {
             relaxed = i;
@@ -366,11 +382,39 @@ pub fn estimate_pvalue_with_model(
     reference_len: u64,
     model: DistanceModel,
 ) -> f64 {
+    estimate_pvalue_with_confidence_and_model(
+        sketch_size,
+        k,
+        alphabet_size,
+        identity,
+        query_len,
+        reference_len,
+        0.9,
+        model,
+    )
+}
+
+pub fn estimate_pvalue_with_confidence_and_model(
+    sketch_size: usize,
+    k: usize,
+    alphabet_size: usize,
+    identity: f64,
+    query_len: usize,
+    reference_len: u64,
+    confidence_interval: f64,
+    model: DistanceModel,
+) -> f64 {
     let kmer_space = (alphabet_size as f64).powi(k as i32);
     let px = 1.0 / (1.0 + kmer_space / query_len as f64);
     let py = px;
     let random_jaccard = px * py / (px + py - px * py);
-    let x = estimate_minimum_hits_relaxed_with_model(sketch_size, k, identity, model);
+    let x = estimate_minimum_hits_relaxed_with_confidence_and_model(
+        sketch_size,
+        k,
+        identity,
+        confidence_interval,
+        model,
+    );
     let sf = if x == 0 {
         1.0
     } else {
@@ -426,6 +470,34 @@ pub fn recommended_window_size_with_model(
         .unwrap_or(query_len);
 
     ((2 * query_len) / optimal_sketch_size).clamp(1, query_len)
+}
+
+pub fn recommended_mashmap3_sketch_size_with_model(
+    pvalue_cutoff: f64,
+    k: usize,
+    alphabet_size: usize,
+    identity: f64,
+    segment_len: usize,
+    reference_len: u64,
+    model: DistanceModel,
+) -> usize {
+    let length_query = segment_len.saturating_sub(k).max(1);
+    for sketch_size in (10..length_query).step_by(10) {
+        if estimate_pvalue_with_confidence_and_model(
+            sketch_size,
+            k,
+            alphabet_size,
+            identity,
+            length_query,
+            reference_len,
+            0.95,
+            model,
+        ) <= pvalue_cutoff
+        {
+            return sketch_size;
+        }
+    }
+    length_query
 }
 
 fn binomial_sf(x: usize, n: usize, p: f64) -> f64 {
