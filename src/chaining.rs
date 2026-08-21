@@ -5,9 +5,6 @@ use crate::{AniConfig, Offset, QuerySketch, ReferenceIndex, SeqId};
 const CHAIN_MIN_BOUND: i64 = 100;
 const CHAIN_RAMP_UP_FACTOR: i64 = 4;
 const CHAIN_MAX_REVISIONS: usize = 32;
-const RAMMAP_CHAIN_MAX_PREDECESSORS: usize = 96;
-const RAMMAP_CHAIN_MAX_GAP: usize = 5000;
-const RAMMAP_CHAIN_DIAG_TOLERANCE: usize = 1200;
 const INF: i64 = i64::MAX / 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,6 +239,7 @@ fn do_l1_mapping_diagonal_impl(
                         min_unique_hits,
                         config.kmer_size,
                         diag_cluster_band,
+                        config,
                         &mut candidates,
                     );
                 }
@@ -343,6 +341,7 @@ fn append_refined_rammap_candidates(
     min_unique_hits: usize,
     anchor_len: usize,
     candidate_band: usize,
+    config: &AniConfig,
     candidates: &mut Vec<L1Candidate>,
 ) {
     let anchors = group
@@ -361,6 +360,9 @@ fn append_refined_rammap_candidates(
         contig_len,
         anchor_len,
         min_unique_hits,
+        config.chain_max_gap,
+        config.chain_diag_tolerance,
+        config.chain_max_predecessors,
         ChainOrientation::Forward,
     );
     append_chain_candidates_with_band(
@@ -377,6 +379,9 @@ fn append_refined_rammap_candidates(
         contig_len,
         anchor_len,
         min_unique_hits,
+        config.chain_max_gap,
+        config.chain_diag_tolerance,
+        config.chain_max_predecessors,
         ChainOrientation::Reverse,
     );
     append_chain_candidates_with_band(
@@ -401,6 +406,9 @@ fn rammap_style_supported_hits(
     _ref_len: usize,
     anchor_len: usize,
     min_chain_hits: usize,
+    max_gap_setting: usize,
+    diag_tolerance_setting: usize,
+    max_predecessors: usize,
     orientation: ChainOrientation,
 ) -> Vec<AnchorHit> {
     if hits.len() < min_chain_hits {
@@ -421,8 +429,8 @@ fn rammap_style_supported_hits(
         return Vec::new();
     }
 
-    let max_gap = RAMMAP_CHAIN_MAX_GAP.max(query_len + anchor_len);
-    let diag_tolerance = RAMMAP_CHAIN_DIAG_TOLERANCE.max(anchor_len * 8);
+    let max_gap = max_gap_setting.max(query_len + anchor_len);
+    let diag_tolerance = diag_tolerance_setting.max(anchor_len * 8);
     let mut scores = vec![1i32; anchors.len()];
     let mut chain_lens = vec![1usize; anchors.len()];
     let mut predecessors = vec![None; anchors.len()];
@@ -435,7 +443,7 @@ fn rammap_style_supported_hits(
 
         for j in (0..i).rev() {
             checked += 1;
-            if checked > RAMMAP_CHAIN_MAX_PREDECESSORS {
+            if checked > max_predecessors {
                 break;
             }
 

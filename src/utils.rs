@@ -37,6 +37,10 @@ pub(crate) type HashValue = u64;
 pub(crate) type SeqId = usize;
 pub(crate) type Offset = usize;
 
+pub const DEFAULT_CHAIN_MAX_PREDECESSORS: usize = 96;
+pub const DEFAULT_CHAIN_MAX_GAP: usize = 5000;
+pub const DEFAULT_CHAIN_DIAG_TOLERANCE: usize = 1200;
+
 pub struct AniConfig {
     pub kmer_size: usize,
     pub fragment_len: usize,
@@ -53,6 +57,9 @@ pub struct AniConfig {
     pub chain: bool,
     pub diag_cluster_bin: usize,
     pub diag_cluster_band: usize,
+    pub chain_max_predecessors: usize,
+    pub chain_max_gap: usize,
+    pub chain_diag_tolerance: usize,
     pub show_progress: bool,
 }
 
@@ -74,6 +81,9 @@ impl Default for AniConfig {
             chain: false,
             diag_cluster_bin: 1000,
             diag_cluster_band: 500,
+            chain_max_predecessors: DEFAULT_CHAIN_MAX_PREDECESSORS,
+            chain_max_gap: DEFAULT_CHAIN_MAX_GAP,
+            chain_diag_tolerance: DEFAULT_CHAIN_DIAG_TOLERANCE,
             show_progress: false,
         }
     }
@@ -140,6 +150,15 @@ impl AniConfig {
         );
         anyhow::ensure!(self.diag_cluster_bin > 0, "diagBin must be positive");
         anyhow::ensure!(self.diag_cluster_band > 0, "diagBand must be positive");
+        anyhow::ensure!(
+            self.chain_max_predecessors > 0,
+            "chainMaxPredecessors must be positive"
+        );
+        anyhow::ensure!(self.chain_max_gap > 0, "chainMaxGap must be positive");
+        anyhow::ensure!(
+            self.chain_diag_tolerance > 0,
+            "chainDiagTolerance must be positive"
+        );
         let w = self.resolved_window_size();
         anyhow::ensure!(w > 0, "minimizer window size must be positive");
         anyhow::ensure!(

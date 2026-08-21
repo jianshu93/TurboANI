@@ -168,11 +168,35 @@ fn main() -> Result<()> {
                 .value_parser(clap::value_parser!(usize)),
         )
         .arg(
+            Arg::new("chain-max-predecessors")
+                .long("chainMaxPredecessors")
+                .help("Maximum previous anchors examined per anchor in heuristic chaining")
+                .value_name("N")
+                .default_value("96")
+                .value_parser(clap::value_parser!(usize)),
+        )
+        .arg(
+            Arg::new("chain-max-gap")
+                .long("chainMaxGap")
+                .help("Maximum reference/query gap allowed in heuristic chaining")
+                .value_name("BASES")
+                .default_value("5000")
+                .value_parser(clap::value_parser!(usize)),
+        )
+        .arg(
+            Arg::new("chain-diag-tolerance")
+                .long("chainDiagTolerance")
+                .help("Maximum diagonal drift allowed in heuristic chaining")
+                .value_name("BASES")
+                .default_value("1200")
+                .value_parser(clap::value_parser!(usize)),
+        )
+        .arg(
             Arg::new("chainx")
                 .long("chainX")
                 .help(
                     "Use optimal ChainX refinement after diagonal clustering for L1 candidate \
-                     screening; the default is minimap2 chaining")
+                     screening; the default is heuristic chaining")
                 .action(ArgAction::SetTrue),
         )
         .arg(
@@ -242,6 +266,9 @@ fn main() -> Result<()> {
     let chainx = m.get_flag("chainx");
     let diag_cluster_bin = *m.get_one::<usize>("diag-bin").unwrap();
     let diag_cluster_band = *m.get_one::<usize>("diag-band").unwrap();
+    let chain_max_predecessors = *m.get_one::<usize>("chain-max-predecessors").unwrap();
+    let chain_max_gap = *m.get_one::<usize>("chain-max-gap").unwrap();
+    let chain_diag_tolerance = *m.get_one::<usize>("chain-diag-tolerance").unwrap();
     let distance_model = DistanceModel::from_code(*m.get_one::<u8>("model").unwrap())
         .context("--model must be 0 for Poisson or 1 for binomial")?;
     let matrix = m.get_flag("matrix");
@@ -286,6 +313,9 @@ fn main() -> Result<()> {
         chain: chainx,
         diag_cluster_bin,
         diag_cluster_band,
+        chain_max_predecessors,
+        chain_max_gap,
+        chain_diag_tolerance,
         show_progress,
     };
 
