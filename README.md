@@ -151,6 +151,26 @@ This it the plot.
 </div>
 
 
+In some cases, query genomes assembled from samples can be fragmented and the order or genomic sequences can be random. We recommend the below commands to order the query genome first. Ideally, the reference genome should be more completely (e.g., less fragmented, order known).
+```bash
+
+$ turboani-order -h
+Order and orient fragmented query contigs against a complete reference with pure-Rust rammap asm5 mapping
+
+Usage: turboani-order <REFERENCE> <QUERY> [PREFIX]
+
+Arguments:
+  <REFERENCE>  Complete reference genome FASTA/FASTQ path
+  <QUERY>      Fragmented query genome FASTA/FASTQ path
+  [PREFIX]     Output prefix [default: turboani_reordered]
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+
+```
+
+
 ### Many comparsions
 List mode is also supported (one file per line, .gz supported):
 
