@@ -2,6 +2,8 @@ pub mod candidate_window;
 pub mod chaining;
 pub mod compute_identity;
 #[cfg(feature = "visual")]
+pub mod order;
+#[cfg(feature = "visual")]
 pub mod plot;
 pub mod simd_minimizer;
 pub mod sliding_mapper;
@@ -14,6 +16,8 @@ pub use compute_identity::{
     estimate_pvalue_with_model, j2md, md_lower_bound, md_lower_bound_with_model, md2j,
     recommended_window_size, recommended_window_size_with_model,
 };
+#[cfg(feature = "visual")]
+pub use order::{ContigOrderOutput, order_query_contigs};
 #[cfg(feature = "visual")]
 pub use plot::write_pair_visualization_pdf;
 pub use simd_minimizer::{MinimizerMode, TabulationMode};
