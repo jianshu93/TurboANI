@@ -1,1 +1,0 @@
-./data/Faecalibacterium_prausnitzii_LS2233.fna.gz	./data/GCF_019967995.1.fna.gz	97.043690	847	1022
