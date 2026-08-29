@@ -20,7 +20,7 @@ use crate::compute_identity::{
 use crate::simd_minimizer::{
     Minimizer, MinimizerMode, MinmerInterval, QuerySeed, TabulationHasher, TabulationMode,
     deterministic_tabulation_hasher, scalar_sequence_minmer_intervals, sequence_minimizers,
-    simd_compatible_window_size, splitmix64_permute,
+    simd_compatible_window_size, splitmix64_permute, syncmer_inner_window_size,
 };
 use crate::sliding_mapper::{MappingResult, do_l2_mapping};
 
@@ -104,7 +104,24 @@ impl AniConfig {
         });
         match self.minimizer_mode {
             MinimizerMode::Simd => simd_compatible_window_size(self.kmer_size, window_size),
+            MinimizerMode::SimdOpenSyncmer | MinimizerMode::SimdClosedSyncmer => window_size,
             MinimizerMode::Scalar | MinimizerMode::ScalarMinmer => window_size,
+        }
+    }
+
+    pub(crate) fn resolved_seed_window_size(&self) -> usize {
+        if self.minimizer_mode.is_syncmer() {
+            syncmer_inner_window_size(self.kmer_size)
+        } else {
+            self.resolved_window_size()
+        }
+    }
+
+    pub(crate) fn resolved_l2_window_size(&self) -> usize {
+        if self.minimizer_mode.is_syncmer() {
+            1
+        } else {
+            self.resolved_window_size()
         }
     }
 
@@ -159,11 +176,16 @@ impl AniConfig {
             self.chain_diag_tolerance > 0,
             "chainDiagTolerance must be positive"
         );
-        let w = self.resolved_window_size();
-        anyhow::ensure!(w > 0, "minimizer window size must be positive");
+        let seed_w = self.resolved_seed_window_size();
+        anyhow::ensure!(seed_w > 0, "seed window size must be positive");
+        let seed_span = if self.minimizer_mode.is_syncmer() {
+            self.kmer_size
+        } else {
+            self.kmer_size + seed_w - 1
+        };
         anyhow::ensure!(
-            self.fragment_len >= self.kmer_size + w - 1,
-            "fragment length must be at least k + w - 1"
+            self.fragment_len >= seed_span,
+            "fragment length must be at least the seed span"
         );
         Ok(())
     }
@@ -566,7 +588,8 @@ fn compare_paths_with_timing_inner(
 ) -> Result<RunOutput> {
     config.validate()?;
     let total_start = Instant::now();
-    let window_size = config.resolved_window_size();
+    let seed_window_size = config.resolved_seed_window_size();
+    let l2_window_size = config.resolved_l2_window_size();
     let tab_hasher = deterministic_tabulation_hasher(config.tab_hash_seed, config.tabulation_mode);
     let reference_progress = progress_bar(
         config.show_progress,
@@ -576,7 +599,7 @@ fn compare_paths_with_timing_inner(
     let (reference, reference_timing) = ReferenceIndex::build(
         ref_paths,
         config,
-        window_size,
+        seed_window_size,
         &tab_hasher,
         &reference_progress,
     )?;
@@ -611,8 +634,14 @@ fn compare_paths_with_timing_inner(
                 let read_wall_ns = read_start.elapsed().as_nanos();
 
                 let map_start = Instant::now();
-                let (mappings, counters) =
-                    map_query_file(&query, &reference, config, window_size, &distance_cache)?;
+                let (mappings, counters) = map_query_file(
+                    &query,
+                    &reference,
+                    config,
+                    seed_window_size,
+                    l2_window_size,
+                    &distance_cache,
+                )?;
                 let map_wall_ns = map_start.elapsed().as_nanos();
 
                 let ani_start = Instant::now();
@@ -1380,7 +1409,8 @@ pub(crate) fn map_query_file(
     query: &QueryFileData,
     reference: &ReferenceIndex,
     config: &AniConfig,
-    window_size: usize,
+    seed_window_size: usize,
+    l2_window_size: usize,
     distance_cache: &DistanceTableCache,
 ) -> Result<(Vec<MappingResult>, MappingCounters)> {
     let tab_hasher = deterministic_tabulation_hasher(config.tab_hash_seed, config.tabulation_mode);
@@ -1392,7 +1422,8 @@ pub(crate) fn map_query_file(
                 fragment,
                 reference,
                 config,
-                window_size,
+                seed_window_size,
+                l2_window_size,
                 &tab_hasher,
                 distance_cache,
             )
@@ -1413,7 +1444,8 @@ fn map_fragment(
     fragment: &QueryFragment,
     reference: &ReferenceIndex,
     config: &AniConfig,
-    window_size: usize,
+    seed_window_size: usize,
+    l2_window_size: usize,
     tab_hasher: &TabulationHasher,
     distance_cache: &DistanceTableCache,
 ) -> Result<(Vec<MappingResult>, MappingCounters)> {
@@ -1423,7 +1455,8 @@ fn map_fragment(
     };
 
     let minimizer_start = Instant::now();
-    let mut minimizers = sequence_minimizers(&fragment.seq, config, window_size, 0, tab_hasher)?;
+    let mut minimizers =
+        sequence_minimizers(&fragment.seq, config, seed_window_size, 0, tab_hasher)?;
     counters.query_minimizer_ns += minimizer_start.elapsed().as_nanos();
 
     minimizers.sort_by_key(|m| m.hash);
@@ -1464,7 +1497,7 @@ fn map_fragment(
     for candidate in l1_candidates {
         let l2_start = Instant::now();
         let (mapping, l2_stats) =
-            do_l2_mapping(&query_sketch, candidate, reference, config, window_size)?;
+            do_l2_mapping(&query_sketch, candidate, reference, config, l2_window_size)?;
         counters.l2_ns += l2_start.elapsed().as_nanos();
         counters.l2_windows += l2_stats.windows;
         counters.l2_ref_sketches += l2_stats.ref_sketches;
@@ -1647,6 +1680,56 @@ mod tests {
             min_fraction: 0.0,
             window_size: Some(10),
             tabulation_mode: TabulationMode::Simple,
+            ..AniConfig::default()
+        };
+
+        let results = compare_paths(&[query.clone()], &[reference.clone()], &config)?;
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].mapped_fragments, 6);
+        assert!(results[0].ani > 99.0, "ANI was {}", results[0].ani);
+        Ok(())
+    }
+
+    #[test]
+    fn identical_genomes_map_with_open_syncmers() -> Result<()> {
+        let dir = tempdir()?;
+        let query = dir.path().join("query.fa");
+        let reference = dir.path().join("ref.fa");
+        let seq = deterministic_dna(6000);
+        fs::write(&query, format!(">q\n{}\n", seq))?;
+        fs::write(&reference, format!(">r\n{}\n", seq))?;
+
+        let config = AniConfig {
+            kmer_size: 16,
+            fragment_len: 1000,
+            min_identity: 70.0,
+            min_fraction: 0.0,
+            minimizer_mode: MinimizerMode::SimdOpenSyncmer,
+            ..AniConfig::default()
+        };
+
+        let results = compare_paths(&[query.clone()], &[reference.clone()], &config)?;
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].mapped_fragments, 6);
+        assert!(results[0].ani > 99.0, "ANI was {}", results[0].ani);
+        Ok(())
+    }
+
+    #[test]
+    fn identical_genomes_map_with_closed_syncmers() -> Result<()> {
+        let dir = tempdir()?;
+        let query = dir.path().join("query.fa");
+        let reference = dir.path().join("ref.fa");
+        let seq = deterministic_dna(6000);
+        fs::write(&query, format!(">q\n{}\n", seq))?;
+        fs::write(&reference, format!(">r\n{}\n", seq))?;
+
+        let config = AniConfig {
+            kmer_size: 16,
+            fragment_len: 1000,
+            min_identity: 70.0,
+            min_fraction: 0.0,
+            minimizer_mode: MinimizerMode::SimdClosedSyncmer,
             ..AniConfig::default()
         };
 

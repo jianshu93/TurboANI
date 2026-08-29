@@ -1,6 +1,6 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use murmur3::murmur3_x64_128;
-use simd_minimizers::packed_seq::{PackedSeqVec, SeqVec};
+use simd_minimizers::packed_seq::{PackedSeq, PackedSeqVec, Seq, SeqVec};
 use std::collections::{BTreeSet, HashMap};
 use std::io::Cursor;
 use tab_hash::{Tab64Simple, Tab64Twisted};
@@ -10,6 +10,8 @@ use crate::{AniConfig, HashValue, Offset, SeqId};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MinimizerMode {
     Simd,
+    SimdOpenSyncmer,
+    SimdClosedSyncmer,
     Scalar,
     ScalarMinmer,
 }
@@ -18,9 +20,15 @@ impl MinimizerMode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Simd => "simd",
+            Self::SimdOpenSyncmer => "simd-open-syncmer",
+            Self::SimdClosedSyncmer => "simd-closed-syncmer",
             Self::Scalar => "scalar",
             Self::ScalarMinmer => "scalar-minmer",
         }
+    }
+
+    pub(crate) fn is_syncmer(self) -> bool {
+        matches!(self, Self::SimdOpenSyncmer | Self::SimdClosedSyncmer)
     }
 }
 
@@ -95,6 +103,12 @@ pub(crate) fn sequence_minimizers(
         MinimizerMode::Simd => {
             simd_sequence_minimizers(seq, config.kmer_size, w, seq_id, tab_hasher)
         }
+        MinimizerMode::SimdOpenSyncmer => {
+            simd_sequence_syncmers::<true>(seq, config.kmer_size, w, seq_id, tab_hasher)
+        }
+        MinimizerMode::SimdClosedSyncmer => {
+            simd_sequence_syncmers::<false>(seq, config.kmer_size, w, seq_id, tab_hasher)
+        }
         MinimizerMode::Scalar => scalar_sequence_minimizers(seq, config.kmer_size, w, seq_id),
         MinimizerMode::ScalarMinmer => scalar_sequence_minmer_query_sketch(
             seq,
@@ -155,6 +169,154 @@ fn simd_sequence_minimizers(
     }
 
     Ok(result)
+}
+
+fn simd_sequence_syncmers<const OPEN: bool>(
+    seq: &[u8],
+    outer_k: usize,
+    inner_w: usize,
+    seq_id: SeqId,
+    tab_hasher: &TabulationHasher,
+) -> Result<Vec<Minimizer>> {
+    if seq.len() < outer_k {
+        return Ok(Vec::new());
+    }
+    if inner_w == 0 || inner_w > outer_k {
+        bail!("syncmer inner window size must be in 1..=k");
+    }
+    if OPEN && inner_w % 2 == 0 {
+        bail!("open syncmers require an odd inner window size");
+    }
+
+    let smer_size = outer_k + 1 - inner_w;
+    let mut result = Vec::new();
+    let mut run_start = 0usize;
+
+    while run_start < seq.len() {
+        while run_start < seq.len() && !is_acgt(seq[run_start]) {
+            run_start += 1;
+        }
+        if run_start >= seq.len() {
+            break;
+        }
+
+        let mut run_end = run_start;
+        while run_end < seq.len() && is_acgt(seq[run_end]) {
+            run_end += 1;
+        }
+
+        let run_len = run_end - run_start;
+        if run_len >= outer_k {
+            let packed = PackedSeqVec::from_ascii(&seq[run_start..run_end]);
+            let packed_seq = packed.as_slice();
+            let mut positions = Vec::new();
+            collect_syncmer_positions::<OPEN>(packed_seq, smer_size, inner_w, &mut positions);
+            append_canonical_syncmer_positions(
+                &mut result,
+                packed_seq,
+                &positions,
+                run_start,
+                run_len,
+                outer_k,
+                seq_id,
+                false,
+                tab_hasher,
+            );
+
+            let packed_rev = packed_seq.to_revcomp();
+            let packed_rev_seq = packed_rev.as_slice();
+            positions.clear();
+            collect_syncmer_positions::<OPEN>(packed_rev_seq, smer_size, inner_w, &mut positions);
+            append_canonical_syncmer_positions(
+                &mut result,
+                packed_seq,
+                &positions,
+                run_start,
+                run_len,
+                outer_k,
+                seq_id,
+                true,
+                tab_hasher,
+            );
+        }
+
+        run_start = run_end;
+    }
+
+    result.sort_unstable_by_key(|m| (m.seq_id, m.wpos, m.hash));
+    result.dedup_by_key(|m| (m.seq_id, m.wpos, m.hash));
+    Ok(result)
+}
+
+fn collect_syncmer_positions<const OPEN: bool>(
+    packed: PackedSeq<'_>,
+    smer_size: usize,
+    inner_w: usize,
+    positions: &mut Vec<u32>,
+) {
+    if OPEN {
+        let _output = simd_minimizers::open_syncmers(smer_size, inner_w).run(packed, positions);
+    } else {
+        let _output = simd_minimizers::closed_syncmers(smer_size, inner_w).run(packed, positions);
+    }
+}
+
+fn append_canonical_syncmer_positions(
+    result: &mut Vec<Minimizer>,
+    packed: PackedSeq<'_>,
+    positions: &[u32],
+    run_start: Offset,
+    run_len: usize,
+    outer_k: usize,
+    seq_id: SeqId,
+    from_revcomp: bool,
+    tab_hasher: &TabulationHasher,
+) {
+    for &raw_pos in positions {
+        let raw_pos = raw_pos as usize;
+        let pos = if from_revcomp {
+            if raw_pos + outer_k > run_len {
+                continue;
+            }
+            run_len - raw_pos - outer_k
+        } else {
+            raw_pos
+        };
+        if pos + outer_k > run_len {
+            continue;
+        }
+
+        let fwd = packed.read_kmer(outer_k, pos);
+        let rev = packed.read_revcomp_kmer(outer_k, pos);
+        if fwd == rev {
+            continue;
+        }
+        result.push(Minimizer {
+            hash: minimizer_token(fwd.min(rev), outer_k, tab_hasher),
+            seq_id,
+            wpos: run_start + pos,
+        });
+    }
+}
+
+pub(crate) fn syncmer_inner_window_size(k: usize) -> usize {
+    k - syncmer_smer_size(k) + 1
+}
+
+pub(crate) fn syncmer_smer_size(k: usize) -> usize {
+    if k <= 1 {
+        return 1;
+    }
+
+    let mut smer_size = ((2 * k) / 3).clamp(1, k);
+    if (k - smer_size + 1) % 2 == 0 {
+        if smer_size > 1 {
+            smer_size -= 1;
+        } else {
+            smer_size += 1;
+        }
+    }
+    smer_size
 }
 
 #[derive(Debug, Clone, Copy)]

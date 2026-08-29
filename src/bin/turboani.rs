@@ -152,6 +152,23 @@ fn main() -> Result<()> {
                 .action(ArgAction::SetTrue),
         )
         .arg(
+            Arg::new("open-syncmer")
+                .long("openSyncmer")
+                .help("Use strand-symmetric open syncmers for seed extraction")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("closed-syncmer")
+                .long("closedSyncmer")
+                .help("Use strand-symmetric closed syncmers for seed extraction")
+                .action(ArgAction::SetTrue),
+        )
+        .group(
+            ArgGroup::new("syncmer-mode")
+                .args(["open-syncmer", "closed-syncmer"])
+                .multiple(false),
+        )
+        .arg(
             Arg::new("diag-bin")
                 .long("diagBin")
                 .help("Diagonal clustering bin width in bases")
@@ -263,6 +280,13 @@ fn main() -> Result<()> {
     } else {
         TabulationMode::Twisted
     };
+    let minimizer_mode = if m.get_flag("open-syncmer") {
+        MinimizerMode::SimdOpenSyncmer
+    } else if m.get_flag("closed-syncmer") {
+        MinimizerMode::SimdClosedSyncmer
+    } else {
+        MinimizerMode::Simd
+    };
     let chainx = m.get_flag("chainx");
     let diag_cluster_bin = *m.get_one::<usize>("diag-bin").unwrap();
     let diag_cluster_band = *m.get_one::<usize>("diag-band").unwrap();
@@ -309,7 +333,7 @@ fn main() -> Result<()> {
         tab_hash_seed: tab_seed,
         tabulation_mode,
         distance_model,
-        minimizer_mode: MinimizerMode::Simd,
+        minimizer_mode,
         chain: chainx,
         diag_cluster_bin,
         diag_cluster_band,
@@ -328,6 +352,7 @@ fn main() -> Result<()> {
         "using {} tabulation hashing",
         config.tabulation_mode.as_str()
     );
+    info!("using {} seed extraction", config.minimizer_mode.as_str());
 
     let run = if let Some(split_count) = split_count {
         compare_paths_split_with_timing(&query_paths, &ref_paths, &config, split_count)?
