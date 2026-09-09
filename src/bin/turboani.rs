@@ -148,7 +148,7 @@ fn main() -> Result<()> {
         .arg(
             Arg::new("simple-tabulation")
                 .long("simpleTabulation")
-                .help("Use simple tabulation hashing instead of the default twisted tabulation")
+                .help("Use simple tabulation hashing instead of the default twisted tabulation hashing")
                 .action(ArgAction::SetTrue),
         )
         .arg(

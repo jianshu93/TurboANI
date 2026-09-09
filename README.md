@@ -23,7 +23,6 @@ The main algorithm flow:
 4. Keep best-hit and reference-bin reciprocal filters before averaging ANI.
 
 
-
 Key ideas:
 - `simd-minimizers` for canonical minimizer positions and super-k-mer window coordinates. Note that the super-k-mer windows and corresponding minimizer positions were retained. 
 - `tab-hash::Tab64Twisted` for deterministic 64-bit tabulation-hashed minimizer. This step is a rehash to obtain true pseudo-randomness via twisted/simple tabulation hashing. 
@@ -62,66 +61,12 @@ cp queries.txt references.txt
 turboani --ql queries.txt --rl references.txt -o turboani.tsv
 ```
 
-## Pre-built binaries
-```bash
-## Linux (no visualization feature, see build section if you want it)
-wget https://github.com/jianshu93/TurboANI/releases/download/v0.1.8/turboani_linux_x86-64_v0.1.8.gz
-gunzip turboani_linux_x86-64_v0.1.8.gz
-mv turboani_linux_x86-64_v0.1.8 turboani
-chmod a+x ./turboani
-./turboani -h
+## Accuracy
+TurboANI is the most accurate ANI estimation algorithm ever while being minimum 20 times faster than FastANI (the second most accurate one). See comparisons below:
 
-## MacOS (visualization feature)
-wget https://github.com/jianshu93/TurboANI/releases/download/v0.1.8/turboani_darwin_aarch64_v0.1.8.tar.gz
-tar -xzvf turboani_darwin_aarch64_v0.1.8.tar.gz
-chmod a+x ./turboani
-./turboani -h
-
-## Homebrew install for MacOS
-## install homebrew first: https://brew.sh
-brew update
-brew tap jianshu93/TurboANI
-brew trust jianshu93/TurboANI
-brew install TurboANI
-turboani -h
-
-```
-## Install from crates.io via cargo
-### Install cargo first
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-
-```bash
-## On Linux
-RUSTFLAGS="-C target-cpu=x86-64-v3" cargo install turboani
-
-## MacOS
-RUSTFLAGS="-C target-cpu=native" cargo install turboani
-
-```
-
-## Build from source (Linux)
-```bash
-### Install rustup here: here: https://rustup.rs
-### After intalling rustup
-rustup install nightly
-rustup default nightly
-git clone https://github.com/jianshu93/TurboANI
-RUSTFLAGS="-C target-cpu=x86-64-v3" cargo build --release
-./target/release/turboani -h
-```
-
-## Build from source (MacOS)
-```bash
-### Install rustup here: here: https://rustup.rs
-### After intalling rustup
-rustup install nightly
-rustup default nightly
-git clone https://github.com/jianshu93/TurboANI
-RUSTFLAGS="-C target-cpu=native" cargo build --release
-./target/release/turboani -h
-```
+<div align="center">
+  <img width="100%" src ="BLAST-ANI_bench.jpg">
+</div>
 
 
 ## Detailed usage
@@ -213,10 +158,71 @@ Timing is collected internally and emitted only in debug mode. For a concise tim
 
 Rayon is used at three levels where the data are independent: reference genome indexing across reference files, query-file comparisons, and fragment mapping inside each query file.
 
-## Notes
+## Detailes installation guidance
+### Pre-built binaries
+```bash
+## Linux (no visualization feature, see build section if you want it)
+wget https://github.com/jianshu93/TurboANI/releases/download/v0.1.8/turboani_linux_x86-64_v0.1.8.gz
+gunzip turboani_linux_x86-64_v0.1.8.gz
+mv turboani_linux_x86-64_v0.1.8 turboani
+chmod a+x ./turboani
+./turboani -h
 
+## MacOS (visualization feature)
+wget https://github.com/jianshu93/TurboANI/releases/download/v0.1.8/turboani_darwin_aarch64_v0.1.8.tar.gz
+tar -xzvf turboani_darwin_aarch64_v0.1.8.tar.gz
+chmod a+x ./turboani
+./turboani -h
+
+## Homebrew install for MacOS
+## install homebrew first: https://brew.sh
+brew update
+brew tap jianshu93/TurboANI
+brew trust jianshu93/TurboANI
+brew install TurboANI
+turboani -h
+
+```
+### Install from crates.io via cargo
+#### Install cargo first
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+```bash
+## On Linux
+RUSTFLAGS="-C target-cpu=x86-64-v3" cargo install turboani
+
+## MacOS
+RUSTFLAGS="-C target-cpu=native" cargo install turboani
+
+```
+
+### Build from source (Linux)
+```bash
+### Install rustup here: here: https://rustup.rs
+### After intalling rustup
+rustup install nightly
+rustup default nightly
+git clone https://github.com/jianshu93/TurboANI
+RUSTFLAGS="-C target-cpu=x86-64-v3" cargo build --release
+./target/release/turboani -h
+```
+
+### Build from source (MacOS)
+```bash
+### Install rustup here: here: https://rustup.rs
+### After intalling rustup
+rustup install nightly
+rustup default nightly
+git clone https://github.com/jianshu93/TurboANI
+RUSTFLAGS="-C target-cpu=native" cargo build --release
+./target/release/turboani -h
+```
+
+
+## Notes
 The implementation skips minimizer windows spanning ambiguous bases before passing sequence runs to `simd-minimizers`. This is usually preferable for Rust SIMD packing and keeps `N`-rich phage assemblies from creating artificial seeds.
 
 ## References
-
 Paper to come
