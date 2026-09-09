@@ -62,7 +62,7 @@ turboani --ql queries.txt --rl references.txt -o turboani.tsv
 ```
 
 ## Accuracy
-TurboANI is the most accurate ANI estimation algorithm ever while being minimum 20 times faster than FastANI (the second most accurate one). See comparisons below:
+TurboANI is the most accurate sketch-based ANI estimation algorithm ever while being minimum 20 times faster than FastANI (the second most accurate one). See comparisons below:
 
 <div align="center">
   <img width="100%" src ="BLAST-ANI_bench.jpg">
