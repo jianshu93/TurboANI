@@ -52,14 +52,23 @@ conda install -c bioconda -c conda-forge turboani
 This is how you can run all-versua-all ANI for a list of genomes (gz supprted, one per line):
 ```bash
 ### obtain some testing genomes first
-wget https://github.com/jianshu93/TurboANI/releases/download/v0.1.6/strep_30_sampled_genomes.tar.gz
-tar -xzvf strep_30_sampled_genomes.tar.gz
-cd strep_30_sampled_genomes
+wget https://github.com/jianshu93/TurboANI/releases/download/v0.1.8/strep_60_genomes.zip
+unzip strep_60_genomes.zip
+cd strep_60_genomes
 find . -name "*.fna.gz" > queries.txt
 cp queries.txt references.txt
 ### run all-versus-all in list mode
 turboani --ql queries.txt --rl references.txt -o turboani.tsv
 ```
+
+Testing accuracy with truth:
+```bash
+wget https://github.com/jianshu93/TurboANI/releases/download/v0.1.8/strep_60_blastANI_truth.tsv
+## use python scripts from the script folder to plot results (you may need to install python libraries such as matplotlib)
+./scripts/plot_TurboANI_blastani.py --truth strep_60_blastANI_truth.tsv --turbo turboani.tsv
+
+```
+
 
 ## Accuracy
 TurboANI is the most accurate sketch-based ANI estimation algorithm ever while being minimum 20 times faster than FastANI (the second most accurate one). See comparisons below:
