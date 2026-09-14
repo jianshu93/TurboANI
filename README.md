@@ -63,8 +63,12 @@ turboani --ql queries.txt --rl references.txt -o turboani.tsv
 
 Testing accuracy with truth:
 ```bash
+### obtain pre-computed BLAST-ANI truth (anib.rb from ANI calculator: http://enve-omics.ce.gatech.edu/ani)
 wget https://github.com/jianshu93/TurboANI/releases/download/v0.1.8/strep_60_blastANI_truth.tsv
 ## use python scripts from the script folder to plot results (you may need to install python libraries such as matplotlib)
+git clone https://github.com/jianshu93/TurboANI.git
+cd TurboANI
+chmod a+x ./scripts/plot_TurboANI_blastani.py
 ./scripts/plot_TurboANI_blastani.py --truth strep_60_blastANI_truth.tsv --turbo turboani.tsv --out-dir out_plot
 
 ```
