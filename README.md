@@ -52,8 +52,8 @@ conda install -c bioconda -c conda-forge turboani
 This is how you can run all-versua-all ANI for a list of genomes (gz supprted, one per line):
 ```bash
 ### obtain some testing genomes first
-wget https://github.com/jianshu93/TurboANI/releases/download/v0.1.8/strep_60_genomes.zip
-unzip strep_60_genomes.zip
+wget https://github.com/jianshu93/TurboANI/releases/download/v0.1.8/strep_60_genomes.tar.gz
+tar -xzvf strep_60_genomes.tar.gz
 cd strep_60_genomes
 find . -name "*.fna.gz" > queries.txt
 cp queries.txt references.txt
