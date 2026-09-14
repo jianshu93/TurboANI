@@ -65,7 +65,7 @@ Testing accuracy with truth:
 ```bash
 wget https://github.com/jianshu93/TurboANI/releases/download/v0.1.8/strep_60_blastANI_truth.tsv
 ## use python scripts from the script folder to plot results (you may need to install python libraries such as matplotlib)
-./scripts/plot_TurboANI_blastani.py --truth strep_60_blastANI_truth.tsv --turbo turboani.tsv
+./scripts/plot_TurboANI_blastani.py --truth strep_60_blastANI_truth.tsv --turbo turboani.tsv --out-dir out_plot
 
 ```
 
