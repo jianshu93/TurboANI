@@ -72,6 +72,12 @@ chmod a+x ./scripts/plot_TurboANI_blastani.py
 ./scripts/plot_TurboANI_blastani.py --truth strep_60_blastANI_truth.tsv --turbo turboani.tsv --out-dir out_plot
 
 ```
+Run FastANI (via bioconda):
+```bash
+fastANI --ql queries.txt --rl references.txt -o fastani.tsv -t 64
+
+```
+
 
 
 ## Accuracy
