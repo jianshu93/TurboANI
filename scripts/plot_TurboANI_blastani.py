@@ -57,20 +57,33 @@ def configure_matplotlib() -> None:
     )
 
 
+def find_ani_column(raw: pd.DataFrame) -> str:
+    for col in ("rbm_ani", "blastANI", "blastani", "ANI", "ani"):
+        if col in raw.columns:
+            return col
+    raise ValueError(
+        "Could not find ANI column in truth file. "
+        "Expected one of: rbm_ani, blastANI, blastani, ANI, ani."
+    )
+
+
 def load_blastani_truth(path: Path) -> pd.DataFrame:
     raw = pd.read_csv(path, sep="\t")
+    ani_col = find_ani_column(raw)
+
+    if "genome1" not in raw.columns or "genome2" not in raw.columns:
+        raise ValueError("Truth file must contain columns: genome1, genome2, and blastANI/rbm_ani")
+
     rows: list[tuple[str, str, float]] = []
     for row in raw.itertuples(index=False):
-        ani = float(row.rbm_ani)
+        ani = float(getattr(row, ani_col))
         if ani < 0 or math.isnan(ani):
             continue
-        g1 = genome_key(row.genome1)
-        g2 = genome_key(row.genome2)
-        a, b = pair_key(g1, g2)
-        rows.append((a, b, ani))
+        g1, g2 = pair_key(getattr(row, "genome1"), getattr(row, "genome2"))
+        rows.append((g1, g2, ani))
 
     truth = pd.DataFrame(rows, columns=["genome1", "genome2", "truth_ani"])
-    return truth.drop_duplicates(["genome1", "genome2"], keep="first")
+    return truth.drop_duplicates(["genome1", "genome2"], keep="first").sort_values(["genome1", "genome2"])
 
 
 def load_turboani_average(path: Path) -> pd.DataFrame:
@@ -82,12 +95,15 @@ def load_turboani_average(path: Path) -> pd.DataFrame:
         names=["query", "reference", "ani"],
         engine="python",
     )
+
     raw["ani"] = raw["ani"].astype(float)
     raw = raw[raw["ani"] >= 0.0].copy()
+
     raw[["genome1", "genome2"]] = pd.DataFrame(
         [pair_key(q, r) for q, r in zip(raw["query"], raw["reference"])],
         index=raw.index,
     )
+
     return (
         raw.groupby(["genome1", "genome2"], as_index=False)
         .agg(ani_avg=("ani", "mean"), direction_count=("ani", "size"))
@@ -96,9 +112,10 @@ def load_turboani_average(path: Path) -> pd.DataFrame:
 
 
 def compute_summary(df: pd.DataFrame, truth_pairs: int) -> dict[str, float]:
-    delta = df["ani_avg"].to_numpy(dtype=float) - df["truth_ani"].to_numpy(dtype=float)
     x = df["truth_ani"].to_numpy(dtype=float)
     y = df["ani_avg"].to_numpy(dtype=float)
+    delta = y - x
+
     return {
         "truth_pairs": truth_pairs,
         "matched_pairs": len(df),
@@ -115,6 +132,7 @@ def compute_summary(df: pd.DataFrame, truth_pairs: int) -> dict[str, float]:
 
 def plot_joint(df: pd.DataFrame, summary: dict[str, float], out_pdf: Path, out_png: Path) -> None:
     configure_matplotlib()
+
     x = df["truth_ani"].to_numpy(dtype=float)
     y = df["ani_avg"].to_numpy(dtype=float)
 
@@ -135,6 +153,7 @@ def plot_joint(df: pd.DataFrame, summary: dict[str, float], out_pdf: Path, out_p
         hspace=0.07,
         wspace=0.06,
     )
+
     ax_top = fig.add_subplot(grid[0, 0])
     ax = fig.add_subplot(grid[1, 0], sharex=ax_top)
     ax_right = fig.add_subplot(grid[1, 1], sharey=ax)
@@ -142,8 +161,10 @@ def plot_joint(df: pd.DataFrame, summary: dict[str, float], out_pdf: Path, out_p
 
     h, xedges, yedges = np.histogram2d(x, y, bins=[bins, bins])
     masked = np.ma.masked_where(h.T <= 0, h.T)
+
     cmap = mpl.colormaps["Purples"].copy()
     cmap.set_bad("white")
+
     mesh = ax.pcolormesh(
         xedges,
         yedges,
@@ -152,13 +173,17 @@ def plot_joint(df: pd.DataFrame, summary: dict[str, float], out_pdf: Path, out_p
         norm=LogNorm(vmin=1, vmax=max(2, float(h.max()))),
         shading="auto",
     )
+
     ax.plot([lo, hi], [lo, hi], color="black", lw=1.1, zorder=3)
 
     top_counts, top_edges = np.histogram(x, bins=bins)
     top_x = (top_edges[:-1] + top_edges[1:]) / 2.0
+
     right_counts, right_edges = np.histogram(y, bins=bins)
     right_y = (right_edges[:-1] + right_edges[1:]) / 2.0
+
     fill = mpl.colormaps["Purples"](0.62)
+
     ax_top.bar(
         top_x,
         top_counts,
@@ -168,6 +193,7 @@ def plot_joint(df: pd.DataFrame, summary: dict[str, float], out_pdf: Path, out_p
         edgecolor="none",
         linewidth=0,
     )
+
     ax_right.barh(
         right_y,
         right_counts,
@@ -178,14 +204,18 @@ def plot_joint(df: pd.DataFrame, summary: dict[str, float], out_pdf: Path, out_p
         linewidth=0,
     )
 
-    ax_top.set_title("FastANI-style L1 hybrid", fontweight="bold", pad=10)
+    ax_top.set_title("TurboANI", fontweight="bold", pad=10)
+
     ax.set_xlim(lo, hi)
     ax.set_ylim(lo, hi)
+
     ticks = [t for t in [70, 75, 80, 85, 90, 95, 100] if lo <= t <= hi]
     ax.set_xticks(ticks)
     ax.set_yticks(ticks)
+
     ax.set_xlabel("BLASTANI truth (%)")
-    ax.set_ylabel("Estimated ANI (%)")
+    ax.set_ylabel("TurboANI ANI (%)")
+
     ax.text(
         0.035,
         0.965,
@@ -199,12 +229,15 @@ def plot_joint(df: pd.DataFrame, summary: dict[str, float], out_pdf: Path, out_p
         fontsize=12,
         bbox=dict(facecolor="white", edgecolor="none", alpha=0.78, pad=3),
     )
+
     ax_top.tick_params(axis="x", labelbottom=False)
     ax_top.set_ylabel("Pair count", fontsize=12)
     ax_top.set_yticks([])
+
     ax_right.tick_params(axis="y", labelleft=False)
     ax_right.set_xlabel("Pair count", fontsize=12)
     ax_right.set_xticks([])
+
     for panel_ax in (ax, ax_top, ax_right):
         for spine in panel_ax.spines.values():
             spine.set_visible(True)
@@ -219,6 +252,7 @@ def plot_joint(df: pd.DataFrame, summary: dict[str, float], out_pdf: Path, out_p
         bbox_transform=ax.transAxes,
         borderpad=1.0,
     )
+
     cb = fig.colorbar(mesh, cax=cax)
     cb.set_label("Pair count", fontsize=9)
     cb.ax.tick_params(labelsize=8, width=0.7, length=2)
@@ -230,37 +264,38 @@ def plot_joint(df: pd.DataFrame, summary: dict[str, float], out_pdf: Path, out_p
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description=(
-            "Compare the experimental TurboANI hybrid "
-            "(SIMD minimizers + twisted tabulation + FastANI-style L1 + bitset L2) "
-            "against BLASTANI truth."
-        )
+        description="Plot TurboANI correlation against BLASTANI truth."
     )
-    parser.add_argument("--truth", type=Path, required=True)
-    parser.add_argument("--turbo", type=Path, required=True)
-    parser.add_argument("--out-dir", type=Path, required=True)
+    parser.add_argument("--truth", type=Path, required=True, help="BLASTANI truth TSV")
+    parser.add_argument("--turbo", type=Path, required=True, help="TurboANI output TSV")
+    parser.add_argument("--out-dir", type=Path, required=True, help="Output directory")
     args = parser.parse_args()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
+
     truth = load_blastani_truth(args.truth)
-    hybrid = load_turboani_average(args.hybrid)
-    joined = truth.merge(hybrid, how="left", on=["genome1", "genome2"])
+    turbo = load_turboani_average(args.turbo)
+
+    joined = truth.merge(turbo, how="left", on=["genome1", "genome2"])
     matched = joined.dropna(subset=["ani_avg"]).copy()
 
     summary = compute_summary(matched, truth_pairs=len(truth))
-    joined.to_csv(args.out_dir / "hybrid_fastani_l1_vs_blastani_joined.tsv", sep="\t", index=False)
+
+    joined.to_csv(args.out_dir / "turboani_vs_blastani_joined.tsv", sep="\t", index=False)
     pd.DataFrame([summary]).to_csv(
-        args.out_dir / "hybrid_fastani_l1_vs_blastani_summary.tsv",
+        args.out_dir / "turboani_vs_blastani_summary.tsv",
         sep="\t",
         index=False,
         float_format="%.8f",
     )
+
     plot_joint(
         matched,
         summary,
-        args.out_dir / "hybrid_fastani_l1_vs_blastani_correlation.pdf",
-        args.out_dir / "hybrid_fastani_l1_vs_blastani_correlation.png",
+        args.out_dir / "turboani_vs_blastani_correlation.pdf",
+        args.out_dir / "turboani_vs_blastani_correlation.png",
     )
+
     print(pd.DataFrame([summary]).to_string(index=False))
 
 
