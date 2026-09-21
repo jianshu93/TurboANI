@@ -63,7 +63,8 @@ turboani --ql queries.txt --rl references.txt -o turboani.tsv
 
 Testing accuracy with truth:
 ```bash
-### obtain pre-computed BLAST-ANI truth (anib.rb from ANI calculator: http://enve-omics.ce.gatech.edu/ani)
+### obtain pre-computed BLAST-ANI truth (anib.rb from ANI calculator: http://enve-omics.ce.gatech.edu/ani), confirmed with authors that the backend of ANI calculator is exact the same ani.rb here: https://github.com/lmrodriguezr/enveomics/blob/main/Scripts/ani.rb , so truth were generated using ani.rb, blastn 2.13.0. 
+### OrthoANI truth were obtained using the Java OAU.jar here: https://www.ezbiocloud.net/tools/orthoaniu
 wget https://github.com/jianshu93/TurboANI/releases/download/v0.1.8/strep_60_blastANI_truth.tsv
 ## use python scripts from the script folder to plot results (you may need to install python libraries such as matplotlib)
 git clone https://github.com/jianshu93/TurboANI.git
