@@ -797,8 +797,7 @@ pub fn write_reference_sketch(
         format!("indexed {} reference genomes", ref_paths.len()),
     );
 
-    let stats =
-        crate::sketch::write_sketch(sketch_path, &reference, config, window_size, compress)?;
+    let stats = crate::sketch::write_sketch(sketch_path, reference, config, window_size, compress)?;
     Ok((stats, timing))
 }
 

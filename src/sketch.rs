@@ -330,7 +330,7 @@ fn read_u24_column<R: Read>(r: &mut Reader<R>, out: &mut [u32]) -> Result<()> {
 /// Serialize a built reference index to `path`.
 pub(crate) fn write_sketch(
     path: &Path,
-    index: &ReferenceIndex,
+    index: ReferenceIndex,
     config: &AniConfig,
     window_size: usize,
     compress: bool,
@@ -358,7 +358,7 @@ pub(crate) fn write_sketch(
 
 fn write_sketch_inner(
     path: &Path,
-    index: &ReferenceIndex,
+    mut index: ReferenceIndex,
     config: &AniConfig,
     window_size: usize,
     compress: bool,
@@ -404,11 +404,12 @@ fn write_sketch_inner(
     }
 
     // Hash order is load-bearing: it is what makes the columns compress.
-    let mut sorted = index.minimizers.clone();
-    sorted.par_sort_unstable_by_key(|m| m.hash);
+    // Sorted in place; the caller is done with the index.
+    index.minimizers.par_sort_unstable_by_key(|m| m.hash);
+    let sorted = &index.minimizers;
 
     let kmer_bytes = (2 * config.kmer_size).div_ceil(8);
-    for minimizer in &sorted {
+    for minimizer in sorted {
         ensure!(
             kmer_bytes == 8 || minimizer.kmer < (1u64 << (8 * kmer_bytes)),
             "k-mer value {} does not fit in {kmer_bytes} bytes; expected 2-bit packing",
@@ -416,11 +417,11 @@ fn write_sketch_inner(
         );
         w.bytes(&minimizer.kmer.to_le_bytes()[..kmer_bytes])?;
     }
-    for minimizer in &sorted {
+    for minimizer in sorted {
         w.u32(u32::try_from(minimizer.seq_id).context("contig id too large")?)?;
     }
     // Contig-local, so 24 bits is enough for any microbial contig.
-    for minimizer in &sorted {
+    for minimizer in sorted {
         let wpos = u32::try_from(minimizer.wpos).context("minimizer position too large")?;
         ensure!(
             wpos < (1 << 24),
