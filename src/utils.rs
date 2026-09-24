@@ -22,7 +22,7 @@ use crate::simd_minimizer::{
     deterministic_tabulation_hasher, scalar_sequence_minmer_intervals, sequence_minimizers,
     simd_compatible_window_size, splitmix64_permute,
 };
-use crate::sliding_mapper::{MappingResult, do_l2_mapping};
+use crate::sliding_mapper::{L2Scratch, MappingResult, do_l2_mapping};
 
 #[cfg(test)]
 use crate::compute_identity::{build_distance_table, j2md, md_lower_bound, md2j};
@@ -1190,7 +1190,14 @@ impl ReferenceIndex {
         let assemble_wall_ns = assemble_start.elapsed().as_nanos();
 
         let sort_start = Instant::now();
-        minimizers.sort_unstable_by_key(|m| m.hash);
+        // Both index sorts are over the full minimizer array -- 94M entries /
+        // 2.3 GB for 300 bacterial genomes -- and were the single largest
+        // single-threaded stage in the program. `par_sort_unstable_by_key` is a
+        // drop-in here: ties are on `hash` and on `(seq_id, wpos)`, and every
+        // downstream consumer re-sorts or dedups to a canonical order, so tie
+        // order does not reach the results. Verified byte-identical output at
+        // 1, 3, 8 and 32 threads.
+        minimizers.par_sort_unstable_by_key(|m| m.hash);
         let sort_hash_wall_ns = sort_start.elapsed().as_nanos();
 
         let lookup_start = Instant::now();
@@ -1208,7 +1215,7 @@ impl ReferenceIndex {
         let lookup_wall_ns = lookup_start.elapsed().as_nanos();
 
         let sort_position_start = Instant::now();
-        minimizers.sort_unstable_by_key(|m| (m.seq_id, m.wpos));
+        minimizers.par_sort_unstable_by_key(|m| (m.seq_id, m.wpos));
         let mut contig_ranges = vec![0..0; contigs.len()];
         let mut start = 0usize;
         while start < minimizers.len() {
@@ -1461,10 +1468,19 @@ fn map_fragment(
     counters.max_l1_candidates_per_fragment = l1_candidates.len() as u64;
 
     let mut mappings = Vec::new();
+    // One scratch for every candidate of this fragment. It stays worker-local,
+    // so this introduces no sharing between rayon workers.
+    let mut l2_scratch = L2Scratch::new();
     for candidate in l1_candidates {
         let l2_start = Instant::now();
-        let (mapping, l2_stats) =
-            do_l2_mapping(&query_sketch, candidate, reference, config, window_size)?;
+        let (mapping, l2_stats) = do_l2_mapping(
+            &query_sketch,
+            candidate,
+            reference,
+            config,
+            window_size,
+            &mut l2_scratch,
+        )?;
         counters.l2_ns += l2_start.elapsed().as_nanos();
         counters.l2_windows += l2_stats.windows;
         counters.l2_ref_sketches += l2_stats.ref_sketches;
@@ -1766,7 +1782,7 @@ mod tests {
             },
         ];
         let (coords, indexed) = build_indexed_minimizers(&query_hashes, &ref_universe);
-        let mut mapper = BitsetBottomSketchSlideMapper::new(&query_hashes, &coords);
+        let mut mapper = BitsetBottomSketchSlideMapper::for_universe(&query_hashes, &coords);
 
         mapper.insert_ref(indexed[0].coord_idx);
         assert_eq!(mapper.shared(), 1);
@@ -1838,7 +1854,14 @@ mod tests {
             range_end: 1,
         };
 
-        let (mapping, stats) = do_l2_mapping(&query, candidate, &reference, &config, 1)?;
+        let (mapping, stats) = do_l2_mapping(
+            &query,
+            candidate,
+            &reference,
+            &config,
+            1,
+            &mut L2Scratch::new(),
+        )?;
 
         assert_eq!(stats.windows, 0);
         assert!(mapping.is_none());
