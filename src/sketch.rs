@@ -6,7 +6,6 @@ use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail, ensure};
-use rayon::slice::ParallelSliceMut;
 
 use crate::simd_minimizer::{
     Minimizer, MinimizerMode, TabulationMode, deterministic_tabulation_hasher, minimizer_token,
@@ -15,7 +14,7 @@ use crate::utils::{AniConfig, ContigInfo, GenomeInfo, ReferenceIndex, ReferenceT
 use rayon::prelude::*;
 
 const MAGIC: &[u8; 8] = b"TANISKT1";
-const FORMAT_VERSION: u32 = 5;
+const FORMAT_VERSION: u32 = 6;
 
 const COMPRESSION_NONE: u8 = 0;
 const COMPRESSION_ZSTD: u8 = 1;
@@ -273,17 +272,27 @@ fn read_fingerprint<R: Read>(r: &mut Reader<R>) -> Result<Fingerprint> {
     })
 }
 
-fn read_u64_column<R: Read>(r: &mut Reader<R>, out: &mut [u64]) -> Result<()> {
-    const CHUNK: usize = 1 << 16;
-    let mut buf = vec![0u8; CHUNK * 8];
-    for block in out.chunks_mut(CHUNK) {
-        let bytes = &mut buf[..block.len() * 8];
-        r.exact(bytes)?;
-        for (slot, raw) in block.iter_mut().zip(bytes.chunks_exact(8)) {
-            *slot = u64::from_le_bytes(raw.try_into().unwrap());
+fn write_varint<W: Write>(w: &mut Writer<W>, mut v: u64) -> Result<()> {
+    loop {
+        let byte = (v & 0x7f) as u8;
+        v >>= 7;
+        w.u8(if v == 0 { byte } else { byte | 0x80 })?;
+        if v == 0 {
+            return Ok(());
         }
     }
-    Ok(())
+}
+
+fn read_varint<R: Read>(r: &mut Reader<R>) -> Result<u64> {
+    let mut v = 0u64;
+    for shift in (0..64).step_by(7) {
+        let byte = r.u8()?;
+        v |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return Ok(v);
+        }
+    }
+    bail!("malformed varint in sketch")
 }
 
 fn read_packed_column<R: Read>(r: &mut Reader<R>, out: &mut [u64], width: usize) -> Result<()> {
@@ -296,32 +305,6 @@ fn read_packed_column<R: Read>(r: &mut Reader<R>, out: &mut [u64], width: usize)
             let mut v = [0u8; 8];
             v[..width].copy_from_slice(raw);
             *slot = u64::from_le_bytes(v);
-        }
-    }
-    Ok(())
-}
-
-fn read_u32_column<R: Read>(r: &mut Reader<R>, out: &mut [u32]) -> Result<()> {
-    const CHUNK: usize = 1 << 16;
-    let mut buf = vec![0u8; CHUNK * 4];
-    for block in out.chunks_mut(CHUNK) {
-        let bytes = &mut buf[..block.len() * 4];
-        r.exact(bytes)?;
-        for (slot, raw) in block.iter_mut().zip(bytes.chunks_exact(4)) {
-            *slot = u32::from_le_bytes(raw.try_into().unwrap());
-        }
-    }
-    Ok(())
-}
-
-fn read_u24_column<R: Read>(r: &mut Reader<R>, out: &mut [u32]) -> Result<()> {
-    const CHUNK: usize = 1 << 16;
-    let mut buf = vec![0u8; CHUNK * 3];
-    for block in out.chunks_mut(CHUNK) {
-        let bytes = &mut buf[..block.len() * 3];
-        r.exact(bytes)?;
-        for (slot, raw) in block.iter_mut().zip(bytes.chunks_exact(3)) {
-            *slot = u32::from_le_bytes([raw[0], raw[1], raw[2], 0]);
         }
     }
     Ok(())
@@ -359,7 +342,7 @@ pub(crate) fn write_sketch(
 
 fn write_sketch_inner(
     path: &Path,
-    mut index: ReferenceIndex,
+    index: ReferenceIndex,
     kmers: &[u64],
     config: &AniConfig,
     window_size: usize,
@@ -399,42 +382,32 @@ fn write_sketch_inner(
         w.string(&genome.path.to_string_lossy())?;
     }
 
-    for contig in &index.contigs {
+    for (seq_id, contig) in index.contigs.iter().enumerate() {
         w.usize(contig.len, "contig length")?;
         w.usize(contig.genome_id, "genome id")?;
         w.string(&contig.name)?;
+        w.usize(index.contig_ranges[seq_id].len(), "contig minimizer count")?;
     }
 
-    // Hash order is load-bearing: it is what makes the columns compress.
-    // Pair each minimizer with its k-mer before sorting, so the columns stay
-    // aligned once the order changes.
-    let mut paired: Vec<(Minimizer, u64)> = index
-        .minimizers
-        .iter()
-        .copied()
-        .zip(kmers.iter().copied())
-        .collect();
-    paired.par_sort_unstable_by_key(|(m, _)| m.hash);
-
+    // Position order: contig ids come from the counts above, and positions
+    // delta-encode to about a byte each.
     let kmer_bytes = (2 * config.kmer_size).div_ceil(8);
-    for (_, kmer) in &paired {
+    for kmer in kmers {
         ensure!(
             kmer_bytes == 8 || *kmer < (1u64 << (8 * kmer_bytes)),
             "k-mer value {kmer} does not fit in {kmer_bytes} bytes; expected 2-bit packing"
         );
         w.bytes(&kmer.to_le_bytes()[..kmer_bytes])?;
     }
-    for (minimizer, _) in &paired {
-        w.u32(u32::try_from(minimizer.seq_id).context("contig id too large")?)?;
-    }
-    // Contig-local, so 24 bits is enough for any microbial contig.
-    for (minimizer, _) in &paired {
-        let wpos = u32::try_from(minimizer.wpos).context("minimizer position too large")?;
-        ensure!(
-            wpos < (1 << 24),
-            "contig position {wpos} exceeds the 24-bit sketch position limit"
-        );
-        w.bytes(&wpos.to_le_bytes()[..3])?;
+
+    for range in &index.contig_ranges {
+        let mut prev = 0u64;
+        for minimizer in &index.minimizers[range.clone()] {
+            let wpos = minimizer.wpos as u64;
+            ensure!(wpos >= prev, "contig minimizer positions are not ascending");
+            write_varint(&mut w, wpos - prev)?;
+            prev = wpos;
+        }
     }
 
     let body_bytes = w.written;
@@ -513,6 +486,7 @@ pub(crate) fn read_sketch(
     }
 
     let mut contigs = Vec::with_capacity(contig_count);
+    let mut counts = Vec::with_capacity(contig_count);
     for _ in 0..contig_count {
         let len = r.usize("contig length")?;
         let genome_id = r.usize("genome id")?;
@@ -520,45 +494,44 @@ pub(crate) fn read_sketch(
             genome_id < genome_count,
             "sketch references genome id {genome_id} but only {genome_count} genomes are present"
         );
-        let name = r.string()?;
         contigs.push(ContigInfo {
-            name,
+            name: r.string()?,
             len,
             genome_id,
         });
+        counts.push(r.usize("contig minimizer count")?);
     }
+    ensure!(
+        counts.iter().sum::<usize>() == minimizer_count,
+        "sketch contig counts do not sum to the declared minimizer count"
+    );
 
     let kmer_bytes = (2 * config.kmer_size).div_ceil(8);
     let mut kmers = vec![0u64; minimizer_count];
     read_packed_column(&mut r, &mut kmers, kmer_bytes)?;
-    let mut seq_ids = vec![0u32; minimizer_count];
-    read_u32_column(&mut r, &mut seq_ids)?;
-    let mut positions = vec![0u32; minimizer_count];
-    read_u24_column(&mut r, &mut positions)?;
 
     let tab = deterministic_tabulation_hasher(config.tab_hash_seed, config.tabulation_mode);
     let hashes: Vec<u64> = kmers
         .par_iter()
         .map(|&kmer| minimizer_token(kmer, config.kmer_size, &tab))
         .collect();
+    drop(kmers);
 
     let mut minimizers = Vec::with_capacity(minimizer_count);
-    for i in 0..minimizer_count {
-        let seq_id = seq_ids[i] as usize;
-        ensure!(
-            seq_id < contig_count,
-            "sketch references contig id {seq_id} but only {contig_count} contigs are present"
-        );
-        minimizers.push(Minimizer {
-            hash: hashes[i],
-            seq_id,
-            wpos: positions[i] as usize,
-        });
+    let mut idx = 0usize;
+    for (seq_id, count) in counts.iter().enumerate() {
+        let mut pos = 0u64;
+        for _ in 0..*count {
+            pos += read_varint(&mut r)?;
+            minimizers.push(Minimizer {
+                hash: hashes[idx],
+                seq_id,
+                wpos: usize::try_from(pos).context("minimizer position too large")?,
+            });
+            idx += 1;
+        }
     }
     drop(hashes);
-    drop(kmers);
-    drop(seq_ids);
-    drop(positions);
 
     let read_wall_ns = load_start.elapsed().as_nanos();
     let (index, sort_wall_ns, lookup_wall_ns) =
