@@ -1329,7 +1329,7 @@ impl ReferenceIndex {
         config: &AniConfig,
     ) -> Result<(Self, u128, u128)> {
         let sort_start = Instant::now();
-        minimizers.par_sort_unstable_by_key(|m| m.hash);
+        minimizers.sort_unstable_by_key(|m| m.hash);
         let sort_hash_wall_ns = sort_start.elapsed().as_nanos();
 
         let lookup_start = Instant::now();
@@ -1347,7 +1347,7 @@ impl ReferenceIndex {
         let lookup_wall_ns = lookup_start.elapsed().as_nanos();
 
         let sort_position_start = Instant::now();
-        minimizers.par_sort_unstable_by_key(|m| (m.seq_id, m.wpos));
+        minimizers.sort_unstable_by_key(|m| (m.seq_id, m.wpos));
         let mut contig_ranges = vec![0..0; contigs.len()];
         let mut start = 0usize;
         while start < minimizers.len() {
