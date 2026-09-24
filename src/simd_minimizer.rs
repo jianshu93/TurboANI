@@ -66,7 +66,6 @@ pub(crate) fn simd_compatible_window_size(k: usize, w: usize) -> usize {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Minimizer {
     pub(crate) hash: HashValue,
-    pub(crate) kmer: u64,
     pub(crate) seq_id: SeqId,
     pub(crate) wpos: Offset,
 }
@@ -83,6 +82,35 @@ pub(crate) struct MinmerInterval {
 pub(crate) struct QuerySeed {
     pub(crate) hash: HashValue,
     pub(crate) qpos: Offset,
+}
+
+/// `(hash, canonical 2-bit k-mer)` for every minimizer, for sketch writing.
+pub(crate) fn sequence_kmer_pairs(
+    seq: &[u8],
+    k: usize,
+    w: usize,
+    tab_hasher: &TabulationHasher,
+) -> Vec<(HashValue, u64)> {
+    let seq_upper = uppercase_ascii(seq);
+    let mut out = Vec::new();
+    for (run_start, run_end) in acgt_runs(&seq_upper) {
+        if run_end - run_start < k + w - 1 {
+            continue;
+        }
+        let packed = PackedSeqVec::from_ascii(&seq_upper[run_start..run_end]);
+        let mut minimizer_positions = Vec::new();
+        let values = simd_minimizers::canonical_minimizers(k, w)
+            .run(packed.as_slice(), &mut minimizer_positions)
+            .values_u64()
+            .collect::<Vec<_>>();
+        for canonical_value in values {
+            out.push((
+                minimizer_token(canonical_value, k, tab_hasher),
+                canonical_value,
+            ));
+        }
+    }
+    out
 }
 
 pub(crate) fn sequence_minimizers(
@@ -146,7 +174,6 @@ fn simd_sequence_minimizers(
             for (wpos, canonical_value) in super_kmers.into_iter().zip(values) {
                 result.push(Minimizer {
                     hash: minimizer_token(canonical_value, k, tab_hasher),
-                    kmer: canonical_value,
                     seq_id,
                     wpos: run_start + wpos as usize,
                 });
@@ -227,7 +254,6 @@ fn scalar_sequence_minimizers(
                     front.emitted = true;
                     result.push(Minimizer {
                         hash: front.hash,
-                        kmer: 0,
                         seq_id,
                         wpos: current_window_id,
                     });
@@ -260,7 +286,6 @@ pub(crate) fn scalar_sequence_minmer_query_sketch(
             if let Some(hash) = canonical_murmur_hash_at(&seq_upper, &seq_rev, pos, k)? {
                 sketch.push(Minimizer {
                     hash,
-                    kmer: 0,
                     seq_id,
                     wpos: pos,
                 });
@@ -563,7 +588,11 @@ fn is_acgt(base: u8) -> bool {
     matches!(base, b'A' | b'C' | b'G' | b'T')
 }
 
-pub(crate) fn minimizer_token(canonical_kmer_value: u64, k: usize, tab_hasher: &TabulationHasher) -> u64 {
+pub(crate) fn minimizer_token(
+    canonical_kmer_value: u64,
+    k: usize,
+    tab_hasher: &TabulationHasher,
+) -> u64 {
     let key = canonical_kmer_value ^ ((k as u64) << 56) ^ 0xD1B5_4A32_D192_ED03;
     tab_hasher.hash(key)
 }

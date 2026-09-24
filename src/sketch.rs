@@ -331,6 +331,7 @@ fn read_u24_column<R: Read>(r: &mut Reader<R>, out: &mut [u32]) -> Result<()> {
 pub(crate) fn write_sketch(
     path: &Path,
     index: ReferenceIndex,
+    kmers: &[u64],
     config: &AniConfig,
     window_size: usize,
     compress: bool,
@@ -343,7 +344,7 @@ pub(crate) fn write_sketch(
     // Build beside the target and rename on success, so a failure part-way
     // through cannot destroy an existing sketch.
     let tmp = path.with_extension(format!("tmp{}", std::process::id()));
-    match write_sketch_inner(&tmp, index, config, window_size, compress) {
+    match write_sketch_inner(&tmp, index, kmers, config, window_size, compress) {
         Ok(stats) => {
             std::fs::rename(&tmp, path)
                 .with_context(|| format!("rename {} to {}", tmp.display(), path.display()))?;
@@ -359,6 +360,7 @@ pub(crate) fn write_sketch(
 fn write_sketch_inner(
     path: &Path,
     mut index: ReferenceIndex,
+    kmers: &[u64],
     config: &AniConfig,
     window_size: usize,
     compress: bool,
@@ -404,24 +406,29 @@ fn write_sketch_inner(
     }
 
     // Hash order is load-bearing: it is what makes the columns compress.
-    // Sorted in place; the caller is done with the index.
-    index.minimizers.par_sort_unstable_by_key(|m| m.hash);
-    let sorted = &index.minimizers;
+    // Pair each minimizer with its k-mer before sorting, so the columns stay
+    // aligned once the order changes.
+    let mut paired: Vec<(Minimizer, u64)> = index
+        .minimizers
+        .iter()
+        .copied()
+        .zip(kmers.iter().copied())
+        .collect();
+    paired.par_sort_unstable_by_key(|(m, _)| m.hash);
 
     let kmer_bytes = (2 * config.kmer_size).div_ceil(8);
-    for minimizer in sorted {
+    for (_, kmer) in &paired {
         ensure!(
-            kmer_bytes == 8 || minimizer.kmer < (1u64 << (8 * kmer_bytes)),
-            "k-mer value {} does not fit in {kmer_bytes} bytes; expected 2-bit packing",
-            minimizer.kmer
+            kmer_bytes == 8 || *kmer < (1u64 << (8 * kmer_bytes)),
+            "k-mer value {kmer} does not fit in {kmer_bytes} bytes; expected 2-bit packing"
         );
-        w.bytes(&minimizer.kmer.to_le_bytes()[..kmer_bytes])?;
+        w.bytes(&kmer.to_le_bytes()[..kmer_bytes])?;
     }
-    for minimizer in sorted {
+    for (minimizer, _) in &paired {
         w.u32(u32::try_from(minimizer.seq_id).context("contig id too large")?)?;
     }
     // Contig-local, so 24 bits is enough for any microbial contig.
-    for minimizer in sorted {
+    for (minimizer, _) in &paired {
         let wpos = u32::try_from(minimizer.wpos).context("minimizer position too large")?;
         ensure!(
             wpos < (1 << 24),
@@ -544,7 +551,6 @@ pub(crate) fn read_sketch(
         );
         minimizers.push(Minimizer {
             hash: hashes[i],
-            kmer: kmers[i],
             seq_id,
             wpos: positions[i] as usize,
         });

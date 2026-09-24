@@ -19,8 +19,8 @@ use crate::compute_identity::{
 };
 use crate::simd_minimizer::{
     Minimizer, MinimizerMode, MinmerInterval, QuerySeed, TabulationHasher, TabulationMode,
-    deterministic_tabulation_hasher, scalar_sequence_minmer_intervals, sequence_minimizers,
-    simd_compatible_window_size, splitmix64_permute,
+    deterministic_tabulation_hasher, scalar_sequence_minmer_intervals, sequence_kmer_pairs,
+    sequence_minimizers, simd_compatible_window_size, splitmix64_permute,
 };
 use crate::sketch::SketchStats;
 use crate::sliding_mapper::{MappingResult, do_l2_mapping};
@@ -775,6 +775,60 @@ pub fn compare_paths_split_with_timing(
     })
 }
 
+/// Canonical k-mers aligned 1:1 with `index.minimizers`, for sketch writing.
+///
+/// Recomputed rather than carried on `Minimizer`, and verified against the
+/// index hashes so a misalignment fails loudly instead of writing a bad sketch.
+pub(crate) fn collect_kmers_in_index_order(
+    ref_paths: &[PathBuf],
+    index: &ReferenceIndex,
+    config: &AniConfig,
+    window_size: usize,
+    tab_hasher: &TabulationHasher,
+) -> Result<Vec<u64>> {
+    let per_genome = ref_paths
+        .par_iter()
+        .map(|path| {
+            let mut reader = parse_fastx_file(path)
+                .with_context(|| format!("failed to open reference {}", path.display()))?;
+            let mut contigs = Vec::new();
+            while let Some(record) = reader.next() {
+                let record =
+                    record.with_context(|| format!("failed to parse {}", path.display()))?;
+                let seq = record.normalize(false);
+                contigs.push(sequence_kmer_pairs(
+                    seq.as_ref(),
+                    config.kmer_size,
+                    window_size,
+                    tab_hasher,
+                ));
+            }
+            Ok(contigs)
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let mut kmers = Vec::with_capacity(index.minimizers.len());
+    let mut seq_id = 0usize;
+    for genome in per_genome {
+        for contig in genome {
+            let range = index.contig_ranges[seq_id].clone();
+            anyhow::ensure!(
+                contig.len() == range.len(),
+                "k-mer recomputation produced {} minimizers for contig {seq_id}, index has {}",
+                contig.len(),
+                range.len()
+            );
+            for ((hash, kmer), minimizer) in contig.into_iter().zip(&index.minimizers[range]) {
+                anyhow::ensure!(hash == minimizer.hash, "k-mer recomputation misaligned");
+                kmers.push(kmer);
+            }
+            seq_id += 1;
+        }
+    }
+    anyhow::ensure!(seq_id == index.contigs.len(), "contig count mismatch");
+    Ok(kmers)
+}
+
 /// Build a reference index and persist it to `sketch_path`.
 pub fn write_reference_sketch(
     ref_paths: &[PathBuf],
@@ -797,7 +851,16 @@ pub fn write_reference_sketch(
         format!("indexed {} reference genomes", ref_paths.len()),
     );
 
-    let stats = crate::sketch::write_sketch(sketch_path, reference, config, window_size, compress)?;
+    let kmers =
+        collect_kmers_in_index_order(ref_paths, &reference, config, window_size, &tab_hasher)?;
+    let stats = crate::sketch::write_sketch(
+        sketch_path,
+        reference,
+        &kmers,
+        config,
+        window_size,
+        compress,
+    )?;
     Ok((stats, timing))
 }
 
@@ -1879,13 +1942,11 @@ mod tests {
         let ref_universe = vec![
             Minimizer {
                 hash: 20,
-                kmer: 0,
                 seq_id: 0,
                 wpos: 1,
             },
             Minimizer {
                 hash: 20,
-                kmer: 0,
                 seq_id: 0,
                 wpos: 2,
             },
@@ -1925,19 +1986,16 @@ mod tests {
             minimizers: vec![
                 Minimizer {
                     hash: 10,
-                    kmer: 0,
                     seq_id: 0,
                     wpos: 0,
                 },
                 Minimizer {
                     hash: 20,
-                    kmer: 0,
                     seq_id: 0,
                     wpos: 5,
                 },
                 Minimizer {
                     hash: 30,
-                    kmer: 0,
                     seq_id: 0,
                     wpos: 11,
                 },
