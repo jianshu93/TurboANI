@@ -6,6 +6,7 @@ pub mod order;
 #[cfg(feature = "visual")]
 pub mod plot;
 pub mod simd_minimizer;
+pub mod sketch;
 pub mod sliding_mapper;
 
 mod utils;
@@ -21,10 +22,12 @@ pub use order::{ContigOrderOutput, order_query_contigs};
 #[cfg(feature = "visual")]
 pub use plot::write_pair_visualization_pdf;
 pub use simd_minimizer::{MinimizerMode, TabulationMode};
+pub use sketch::SketchStats;
 pub use utils::{
     AniConfig, AniResult, MappingCounters, QueryTiming, ReferenceTiming, RunOutput, TimingReport,
-    compare_paths, compare_paths_split_with_timing, compare_paths_with_timing,
-    format_timing_summary, read_path_list, write_phylip_matrix, write_results, write_timing_report,
+    compare_paths, compare_paths_split_with_timing, compare_paths_with_sketch,
+    compare_paths_with_timing, format_timing_summary, read_path_list, write_phylip_matrix,
+    write_reference_sketch, write_results, write_timing_report,
 };
 
 pub(crate) use utils::{

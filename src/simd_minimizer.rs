@@ -84,6 +84,35 @@ pub(crate) struct QuerySeed {
     pub(crate) qpos: Offset,
 }
 
+/// `(hash, canonical 2-bit k-mer)` for every minimizer, for sketch writing.
+pub(crate) fn sequence_kmer_pairs(
+    seq: &[u8],
+    k: usize,
+    w: usize,
+    tab_hasher: &TabulationHasher,
+) -> Vec<(HashValue, u64)> {
+    let seq_upper = uppercase_ascii(seq);
+    let mut out = Vec::new();
+    for (run_start, run_end) in acgt_runs(&seq_upper) {
+        if run_end - run_start < k + w - 1 {
+            continue;
+        }
+        let packed = PackedSeqVec::from_ascii(&seq_upper[run_start..run_end]);
+        let mut minimizer_positions = Vec::new();
+        let values = simd_minimizers::canonical_minimizers(k, w)
+            .run(packed.as_slice(), &mut minimizer_positions)
+            .values_u64()
+            .collect::<Vec<_>>();
+        for canonical_value in values {
+            out.push((
+                minimizer_token(canonical_value, k, tab_hasher),
+                canonical_value,
+            ));
+        }
+    }
+    out
+}
+
 pub(crate) fn sequence_minimizers(
     seq: &[u8],
     config: &AniConfig,
@@ -559,7 +588,11 @@ fn is_acgt(base: u8) -> bool {
     matches!(base, b'A' | b'C' | b'G' | b'T')
 }
 
-fn minimizer_token(canonical_kmer_value: u64, k: usize, tab_hasher: &TabulationHasher) -> u64 {
+pub(crate) fn minimizer_token(
+    canonical_kmer_value: u64,
+    k: usize,
+    tab_hasher: &TabulationHasher,
+) -> u64 {
     let key = canonical_kmer_value ^ ((k as u64) << 56) ^ 0xD1B5_4A32_D192_ED03;
     tab_hasher.hash(key)
 }
