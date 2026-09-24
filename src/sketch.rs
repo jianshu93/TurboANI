@@ -11,8 +11,8 @@ use rayon::slice::ParallelSliceMut;
 use crate::simd_minimizer::{
     Minimizer, MinimizerMode, TabulationMode, deterministic_tabulation_hasher, minimizer_token,
 };
-use rayon::prelude::*;
 use crate::utils::{AniConfig, ContigInfo, GenomeInfo, ReferenceIndex, ReferenceTiming};
+use rayon::prelude::*;
 
 const MAGIC: &[u8; 8] = b"TANISKT1";
 const FORMAT_VERSION: u32 = 5;
@@ -63,7 +63,8 @@ impl Fingerprint {
                 MinimizerMode::ScalarMinmer => 2,
             },
             distance_model: config.distance_model.code(),
-            fragment_len: u32::try_from(config.fragment_len).context("fragment length too large")?,
+            fragment_len: u32::try_from(config.fragment_len)
+                .context("fragment length too large")?,
             min_identity: config.min_identity,
             p_value: config.p_value,
             reference_size: config.reference_size,
@@ -142,13 +143,14 @@ enum BodyWriter<W: Write> {
     Zstd(Box<zstd::Encoder<'static, W>>),
 }
 
-impl<W: Write> BodyWriter<W> {
+impl BodyWriter<BufWriter<File>> {
     fn finish(self) -> Result<()> {
-        let mut sink = match self {
+        let sink = match self {
             BodyWriter::Plain(w) => w,
             BodyWriter::Zstd(e) => e.finish().context("finish zstd stream")?,
         };
-        sink.flush().context("flush sketch file")?;
+        let file = sink.into_inner().context("flush sketch file")?;
+        file.sync_all().context("sync sketch file")?;
         Ok(())
     }
 }
@@ -338,8 +340,31 @@ pub(crate) fn write_sketch(
         "sketching requires the SIMD minimizer mode"
     );
 
-    let file = File::create(path)
-        .with_context(|| format!("create sketch file {}", path.display()))?;
+    // Build beside the target and rename on success, so a failure part-way
+    // through cannot destroy an existing sketch.
+    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+    match write_sketch_inner(&tmp, index, config, window_size, compress) {
+        Ok(stats) => {
+            std::fs::rename(&tmp, path)
+                .with_context(|| format!("rename {} to {}", tmp.display(), path.display()))?;
+            Ok(stats)
+        }
+        Err(err) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(err)
+        }
+    }
+}
+
+fn write_sketch_inner(
+    path: &Path,
+    index: &ReferenceIndex,
+    config: &AniConfig,
+    window_size: usize,
+    compress: bool,
+) -> Result<SketchStats> {
+    let file =
+        File::create(path).with_context(|| format!("create sketch file {}", path.display()))?;
 
     // Plaintext so a mismatch is rejected without decompressing the body.
     let mut header = Writer::new(BufWriter::new(file));
@@ -424,8 +449,7 @@ pub(crate) fn read_sketch(
     window_size: usize,
 ) -> Result<(ReferenceIndex, SketchStats, ReferenceTiming)> {
     let load_start = std::time::Instant::now();
-    let file =
-        File::open(path).with_context(|| format!("open sketch file {}", path.display()))?;
+    let file = File::open(path).with_context(|| format!("open sketch file {}", path.display()))?;
     let bytes = file.metadata().map(|m| m.len()).unwrap_or(0);
     let mut r = Reader::new(BufReader::new(file));
 
@@ -451,7 +475,10 @@ pub(crate) fn read_sketch(
             path.display()
         );
     }
-    log::debug!("loaded sketch {} written by turboani {built_by}", path.display());
+    log::debug!(
+        "loaded sketch {} written by turboani {built_by}",
+        path.display()
+    );
 
     let genome_count = r.usize("genome count")?;
     let contig_count = r.usize("contig count")?;
@@ -463,7 +490,10 @@ pub(crate) fn read_sketch(
         COMPRESSION_ZSTD => Body::Zstd(Box::new(
             zstd::Decoder::with_buffer(r.inner).context("init zstd decoder")?,
         )),
-        other => bail!("sketch {} uses unknown compression code {other}", path.display()),
+        other => bail!(
+            "sketch {} uses unknown compression code {other}",
+            path.display()
+        ),
     };
     let mut r = Reader::new(BufReader::with_capacity(1 << 20, body));
 
