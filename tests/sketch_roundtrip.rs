@@ -7,7 +7,9 @@ use tempfile::tempdir;
 use turboani::{AniConfig, compare_paths, compare_paths_with_sketch, write_reference_sketch};
 
 fn data(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("data").join(name)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("data")
+        .join(name)
 }
 
 fn genomes() -> (Vec<PathBuf>, Vec<PathBuf>) {

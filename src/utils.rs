@@ -837,6 +837,7 @@ pub fn write_reference_sketch(
     compress: bool,
 ) -> Result<(SketchStats, ReferenceTiming)> {
     config.validate()?;
+    let total_start = Instant::now();
     let window_size = config.resolved_window_size();
     let tab_hasher = deterministic_tabulation_hasher(config.tab_hash_seed, config.tabulation_mode);
     let progress = progress_bar(
@@ -844,7 +845,7 @@ pub fn write_reference_sketch(
         usize_to_u64_saturating(ref_paths.len()),
         format!("building reference index for {} genomes", ref_paths.len()),
     );
-    let (reference, timing) =
+    let (reference, mut timing) =
         ReferenceIndex::build(ref_paths, config, window_size, &tab_hasher, &progress)?;
     finish_progress(
         &progress,
@@ -861,6 +862,9 @@ pub fn write_reference_sketch(
         window_size,
         compress,
     )?;
+
+    // Cover k-mer collection, serialization and compression, not just the build.
+    timing.total_wall_ns = total_start.elapsed().as_nanos();
     Ok((stats, timing))
 }
 
