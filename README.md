@@ -12,7 +12,7 @@
   <img width="37.5%" src ="TurboANI_logo.svg">
 </div>
 
-# TurboANI
+# TurboANI🦀
 TurboANI is a super fast  Average Nucleotide Identity (or ANI) estimation algorithm implemented in pure Rust:
 
 The main algorithm flow:
