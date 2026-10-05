@@ -1492,6 +1492,7 @@ dependencies = [
  "svg2pdf",
  "tab-hash",
  "tempfile",
+ "zstd",
 ]
 
 [[package]]

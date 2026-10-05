@@ -19,9 +19,10 @@ use crate::compute_identity::{
 };
 use crate::simd_minimizer::{
     Minimizer, MinimizerMode, MinmerInterval, QuerySeed, TabulationHasher, TabulationMode,
-    deterministic_tabulation_hasher, scalar_sequence_minmer_intervals, sequence_minimizers,
-    simd_compatible_window_size, splitmix64_permute,
+    deterministic_tabulation_hasher, scalar_sequence_minmer_intervals, sequence_kmer_pairs,
+    sequence_minimizers, simd_compatible_window_size, splitmix64_permute,
 };
+use crate::sketch::SketchStats;
 use crate::sliding_mapper::{MappingResult, do_l2_mapping};
 
 #[cfg(test)]
@@ -584,12 +585,37 @@ fn compare_paths_with_timing_inner(
         &reference_progress,
         format!("indexed {} reference genomes", ref_paths.len()),
     );
+
+    map_queries_against_index(
+        query_paths,
+        &reference,
+        ref_paths.len(),
+        reference_timing,
+        config,
+        window_size,
+        total_start,
+        shared_pair_progress,
+    )
+}
+
+/// Map every query genome against an already-built reference index.
+#[allow(clippy::too_many_arguments)]
+fn map_queries_against_index(
+    query_paths: &[PathBuf],
+    reference: &ReferenceIndex,
+    reference_count: usize,
+    reference_timing: ReferenceTiming,
+    config: &AniConfig,
+    window_size: usize,
+    total_start: Instant,
+    shared_pair_progress: Option<&ProgressBar>,
+) -> Result<RunOutput> {
     let distance_cache =
         DistanceTableCache::new(config.kmer_size, config.fragment_len, config.distance_model);
 
     let pair_total = usize_to_u64_saturating(query_paths.len())
-        .saturating_mul(usize_to_u64_saturating(ref_paths.len()));
-    let pair_step = usize_to_u64_saturating(ref_paths.len());
+        .saturating_mul(usize_to_u64_saturating(reference_count));
+    let pair_step = usize_to_u64_saturating(reference_count);
     let pair_progress = shared_pair_progress.cloned().unwrap_or_else(|| {
         progress_bar(
             config.show_progress,
@@ -597,7 +623,7 @@ fn compare_paths_with_timing_inner(
             format!(
                 "mapping {} query genomes against {} reference genomes",
                 query_paths.len(),
-                ref_paths.len()
+                reference_count
             ),
         )
     });
@@ -612,12 +638,12 @@ fn compare_paths_with_timing_inner(
 
                 let map_start = Instant::now();
                 let (mappings, counters) =
-                    map_query_file(&query, &reference, config, window_size, &distance_cache)?;
+                    map_query_file(&query, reference, config, window_size, &distance_cache)?;
                 let map_wall_ns = map_start.elapsed().as_nanos();
 
                 let ani_start = Instant::now();
                 let mapping_count = mappings.len();
-                let results = compute_ani_results(&query, &reference, mappings, config);
+                let results = compute_ani_results(&query, reference, mappings, config);
                 let ani_wall_ns = ani_start.elapsed().as_nanos();
 
                 let timing = QueryTiming {
@@ -747,6 +773,137 @@ pub fn compare_paths_split_with_timing(
             aggregate,
         },
     })
+}
+
+/// Canonical k-mers aligned 1:1 with `index.minimizers`, for sketch writing.
+///
+/// Recomputed rather than carried on `Minimizer`, and verified against the
+/// index hashes so a misalignment fails loudly instead of writing a bad sketch.
+pub(crate) fn collect_kmers_in_index_order(
+    ref_paths: &[PathBuf],
+    index: &ReferenceIndex,
+    config: &AniConfig,
+    window_size: usize,
+    tab_hasher: &TabulationHasher,
+) -> Result<Vec<u64>> {
+    let per_genome = ref_paths
+        .par_iter()
+        .map(|path| {
+            let mut reader = parse_fastx_file(path)
+                .with_context(|| format!("failed to open reference {}", path.display()))?;
+            let mut contigs = Vec::new();
+            while let Some(record) = reader.next() {
+                let record =
+                    record.with_context(|| format!("failed to parse {}", path.display()))?;
+                let seq = record.normalize(false);
+                contigs.push(sequence_kmer_pairs(
+                    seq.as_ref(),
+                    config.kmer_size,
+                    window_size,
+                    tab_hasher,
+                ));
+            }
+            Ok(contigs)
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let mut kmers = Vec::with_capacity(index.minimizers.len());
+    let mut seq_id = 0usize;
+    for genome in per_genome {
+        for contig in genome {
+            let range = index.contig_ranges[seq_id].clone();
+            anyhow::ensure!(
+                contig.len() == range.len(),
+                "k-mer recomputation produced {} minimizers for contig {seq_id}, index has {}",
+                contig.len(),
+                range.len()
+            );
+            for ((hash, kmer), minimizer) in contig.into_iter().zip(&index.minimizers[range]) {
+                anyhow::ensure!(hash == minimizer.hash, "k-mer recomputation misaligned");
+                kmers.push(kmer);
+            }
+            seq_id += 1;
+        }
+    }
+    anyhow::ensure!(seq_id == index.contigs.len(), "contig count mismatch");
+    Ok(kmers)
+}
+
+/// Build a reference index and persist it to `sketch_path`.
+pub fn write_reference_sketch(
+    ref_paths: &[PathBuf],
+    config: &AniConfig,
+    sketch_path: &Path,
+    compress: bool,
+) -> Result<(SketchStats, ReferenceTiming)> {
+    config.validate()?;
+    let total_start = Instant::now();
+    let window_size = config.resolved_window_size();
+    let tab_hasher = deterministic_tabulation_hasher(config.tab_hash_seed, config.tabulation_mode);
+    let progress = progress_bar(
+        config.show_progress,
+        usize_to_u64_saturating(ref_paths.len()),
+        format!("building reference index for {} genomes", ref_paths.len()),
+    );
+    let (reference, mut timing) =
+        ReferenceIndex::build(ref_paths, config, window_size, &tab_hasher, &progress)?;
+    finish_progress(
+        &progress,
+        format!("indexed {} reference genomes", ref_paths.len()),
+    );
+
+    let kmers =
+        collect_kmers_in_index_order(ref_paths, &reference, config, window_size, &tab_hasher)?;
+    let stats = crate::sketch::write_sketch(
+        sketch_path,
+        reference,
+        &kmers,
+        config,
+        window_size,
+        compress,
+    )?;
+
+    // Cover k-mer collection, serialization and compression, not just the build.
+    timing.total_wall_ns = total_start.elapsed().as_nanos();
+    Ok((stats, timing))
+}
+
+/// Compare queries against a reference index loaded from a sketch file.
+pub fn compare_paths_with_sketch(
+    query_paths: &[PathBuf],
+    sketch_path: &Path,
+    config: &AniConfig,
+) -> Result<RunOutput> {
+    config.validate()?;
+    let total_start = Instant::now();
+    let window_size = config.resolved_window_size();
+
+    let load_progress = progress_bar(
+        config.show_progress,
+        1,
+        format!("loading sketch {}", sketch_path.display()),
+    );
+    let (reference, stats, reference_timing) =
+        crate::sketch::read_sketch(sketch_path, config, window_size)?;
+    load_progress.inc(1);
+    finish_progress(
+        &load_progress,
+        format!(
+            "loaded {} reference genomes from sketch ({} minimizers)",
+            stats.genomes, stats.minimizers
+        ),
+    );
+
+    map_queries_against_index(
+        query_paths,
+        &reference,
+        stats.genomes,
+        reference_timing,
+        config,
+        window_size,
+        total_start,
+        None,
+    )
 }
 
 fn sort_ani_results(results: &mut [AniResult]) {
@@ -988,6 +1145,18 @@ pub fn format_timing_summary(report: &TimingReport) -> String {
         seconds(report.reference.total_wall_ns),
         seconds(report.queries.iter().map(|q| q.map_wall_ns).sum::<u128>())
     );
+    let _ = writeln!(
+        text,
+        "timing reference read={:.6}s assemble={:.6}s sort={:.6}s lookup={:.6}s genomes={} contigs={} minimizers={} lookup_keys={}",
+        seconds(report.reference.read_wall_ns),
+        seconds(report.reference.assemble_wall_ns),
+        seconds(report.reference.sort_wall_ns),
+        seconds(report.reference.lookup_wall_ns),
+        report.reference.genomes,
+        report.reference.contigs,
+        report.reference.minimizers,
+        report.reference.lookup_keys,
+    );
     let c = &report.aggregate;
     let _ = writeln!(
         text,
@@ -1189,6 +1358,42 @@ impl ReferenceIndex {
         }
         let assemble_wall_ns = assemble_start.elapsed().as_nanos();
 
+        let (index, sort_wall_ns, lookup_wall_ns) =
+            Self::finalize(genomes, contigs, minimizers, minmer_intervals, config)?;
+
+        let timing = ReferenceTiming {
+            total_wall_ns: total_start.elapsed().as_nanos(),
+            read_wall_ns,
+            assemble_wall_ns,
+            sort_wall_ns,
+            lookup_wall_ns,
+            genomes: index.genomes.len(),
+            contigs: index.contigs.len(),
+            minimizers: if config.minimizer_mode == MinimizerMode::ScalarMinmer {
+                index.minmer_intervals.len()
+            } else {
+                index.minimizers.len()
+            },
+            lookup_keys: index
+                .minmer_lookup
+                .as_ref()
+                .map(MinmerIntervalLookup::len)
+                .unwrap_or_else(|| index.lookup.len()),
+            freq_threshold: index.freq_threshold,
+        };
+
+        Ok((index, timing))
+    }
+
+    /// Build the derived lookup structures. Shared by `build` and sketch load.
+    /// Returns the index with the sort and lookup wall times.
+    pub(crate) fn finalize(
+        genomes: Vec<GenomeInfo>,
+        contigs: Vec<ContigInfo>,
+        mut minimizers: Vec<Minimizer>,
+        mut minmer_intervals: Vec<MinmerInterval>,
+        config: &AniConfig,
+    ) -> Result<(Self, u128, u128)> {
         let sort_start = Instant::now();
         minimizers.sort_unstable_by_key(|m| m.hash);
         let sort_hash_wall_ns = sort_start.elapsed().as_nanos();
@@ -1234,26 +1439,6 @@ impl ReferenceIndex {
         }
         let sort_wall_ns = sort_hash_wall_ns + sort_position_start.elapsed().as_nanos();
 
-        let timing = ReferenceTiming {
-            total_wall_ns: total_start.elapsed().as_nanos(),
-            read_wall_ns,
-            assemble_wall_ns,
-            sort_wall_ns,
-            lookup_wall_ns,
-            genomes: genomes.len(),
-            contigs: contigs.len(),
-            minimizers: if config.minimizer_mode == MinimizerMode::ScalarMinmer {
-                minmer_intervals.len()
-            } else {
-                minimizers.len()
-            },
-            lookup_keys: minmer_lookup
-                .as_ref()
-                .map(MinmerIntervalLookup::len)
-                .unwrap_or_else(|| lookup.len()),
-            freq_threshold,
-        };
-
         Ok((
             Self {
                 genomes,
@@ -1266,8 +1451,13 @@ impl ReferenceIndex {
                 minmer_lookup,
                 freq_threshold,
             },
-            timing,
+            sort_wall_ns,
+            lookup_wall_ns,
         ))
+    }
+
+    pub(crate) fn lookup_len(&self) -> usize {
+        self.lookup.len()
     }
 
     pub(crate) fn lower_bound(&self, seq_id: SeqId, wpos: Offset) -> usize {

@@ -5,8 +5,9 @@ use clap::{Arg, ArgAction, ArgGroup, Command};
 use log::info;
 use turboani::{
     AniConfig, DistanceModel, MinimizerMode, TabulationMode, TimingReport,
-    compare_paths_split_with_timing, compare_paths_with_timing, format_timing_summary,
-    read_path_list, write_phylip_matrix, write_results,
+    compare_paths_split_with_timing, compare_paths_with_sketch, compare_paths_with_timing,
+    format_timing_summary, read_path_list, write_phylip_matrix, write_reference_sketch,
+    write_results,
 };
 
 fn main() -> Result<()> {
@@ -39,7 +40,7 @@ fn main() -> Result<()> {
         .group(
             ArgGroup::new("query-input")
                 .args(["query", "query-list"])
-                .required(true)
+                .required(false)
                 .multiple(false),
         )
         .arg(
@@ -58,19 +59,44 @@ fn main() -> Result<()> {
                 .value_name("REFERENCE_LIST")
                 .value_parser(clap::value_parser!(PathBuf)),
         )
+        .arg(
+            Arg::new("ref-sketch")
+                .long("rd")
+                .alias("refDb")
+                .help("Prebuilt reference sketch written by --sketch-out")
+                .value_name("REFERENCE_SKETCH")
+                .value_parser(clap::value_parser!(PathBuf)),
+        )
         .group(
             ArgGroup::new("reference-input")
-                .args(["reference", "ref-list"])
+                .args(["reference", "ref-list", "ref-sketch"])
                 .required(true)
                 .multiple(false),
+        )
+        .arg(
+            Arg::new("sketch-out")
+                .long("sketch-out")
+                .help(
+                    "Build the reference index and write it to this sketch file, then exit. \
+                     Reuse it with --rd",
+                )
+                .value_name("SKETCH")
+                .value_parser(clap::value_parser!(PathBuf)),
+        )
+        .arg(
+            Arg::new("no-sketch-compression")
+                .long("no-sketch-compression")
+                .help(
+                    "Write the sketch uncompressed: ~1.8x larger on disk but faster to load",
+                )
+                .action(ArgAction::SetTrue),
         )
         .arg(
             Arg::new("output")
                 .short('o')
                 .long("output")
-                .help("Output ANI table")
+                .help("Output ANI table (not required with --sketch-out)")
                 .value_name("OUTPUT")
-                .required(true)
                 .value_parser(clap::value_parser!(PathBuf)),
         )
         .arg(
@@ -248,7 +274,9 @@ fn main() -> Result<()> {
     let query_list_path = m.get_one::<PathBuf>("query-list").cloned();
     let reference_path = m.get_one::<PathBuf>("reference").cloned();
     let ref_list_path = m.get_one::<PathBuf>("ref-list").cloned();
-    let output_path = m.get_one::<PathBuf>("output").unwrap();
+    let ref_sketch_path = m.get_one::<PathBuf>("ref-sketch").cloned();
+    let sketch_out_path = m.get_one::<PathBuf>("sketch-out").cloned();
+    let sketch_compress = !m.get_flag("no-sketch-compression");
     let kmer_size = *m.get_one::<usize>("kmer-size").unwrap();
     let fragment_len = *m.get_one::<usize>("fragment-len").unwrap();
     let min_identity = *m.get_one::<f64>("min-identity").unwrap();
@@ -289,8 +317,28 @@ fn main() -> Result<()> {
 
     info!("using {} rayon threads", rayon::current_num_threads());
 
-    let query_paths = input_paths(query_path, query_list_path)?;
-    let ref_paths = input_paths(reference_path, ref_list_path)?;
+    let ref_paths = if ref_sketch_path.is_some() {
+        Vec::new()
+    } else {
+        input_paths(reference_path, ref_list_path)?
+    };
+
+    if sketch_out_path.is_some() {
+        anyhow::ensure!(
+            ref_sketch_path.is_none(),
+            "--sketch-out builds a sketch from genomes; pass -r/--rl, not --rd"
+        );
+    }
+
+    let query_paths = if sketch_out_path.is_some() {
+        Vec::new()
+    } else {
+        anyhow::ensure!(
+            query_path.is_some() || query_list_path.is_some(),
+            "a query input is required: pass -q or --ql"
+        );
+        input_paths(query_path, query_list_path)?
+    };
 
     #[cfg(feature = "visual")]
     if visualize_path.is_some() && (query_paths.len() != 1 || ref_paths.len() != 1) {
@@ -329,7 +377,41 @@ fn main() -> Result<()> {
         config.tabulation_mode.as_str()
     );
 
-    let run = if let Some(split_count) = split_count {
+    if let Some(sketch_path) = sketch_out_path {
+        let (stats, timing) =
+            write_reference_sketch(&ref_paths, &config, &sketch_path, sketch_compress)?;
+        let mb = |b: u64| b as f64 / (1024.0 * 1024.0);
+        println!(
+            "wrote sketch {} ({} genomes, {} contigs, {} minimizers, {:.2} MB on disk, \
+             {:.2} MB uncompressed, {:.0}% of raw)",
+            sketch_path.display(),
+            stats.genomes,
+            stats.contigs,
+            stats.minimizers,
+            mb(stats.bytes),
+            mb(stats.uncompressed_bytes),
+            100.0 * stats.bytes as f64 / stats.uncompressed_bytes.max(1) as f64,
+        );
+        log_timing_summary(&TimingReport {
+            total_wall_ns: timing.total_wall_ns,
+            reference: timing,
+            queries: Vec::new(),
+            aggregate: Default::default(),
+        });
+        return Ok(());
+    }
+
+    let output_path = m
+        .get_one::<PathBuf>("output")
+        .context("an output path is required: pass -o")?;
+
+    let run = if let Some(sketch_path) = ref_sketch_path.as_ref() {
+        anyhow::ensure!(
+            split_count.is_none(),
+            "--split is not supported with --rd; the sketch is already a single prebuilt index"
+        );
+        compare_paths_with_sketch(&query_paths, sketch_path, &config)?
+    } else if let Some(split_count) = split_count {
         compare_paths_split_with_timing(&query_paths, &ref_paths, &config, split_count)?
     } else {
         compare_paths_with_timing(&query_paths, &ref_paths, &config)?
@@ -338,6 +420,10 @@ fn main() -> Result<()> {
     write_results(output_path, &run.results)?;
 
     if matrix {
+        anyhow::ensure!(
+            ref_sketch_path.is_none(),
+            "--matrix needs the reference genome list; it is not supported with --rd yet"
+        );
         write_phylip_matrix(output_path, &query_paths, &ref_paths, &run.results)?;
     }
 
