@@ -36,9 +36,28 @@ pub(crate) struct IndexedMinimizer {
     pub(crate) coord_idx: usize,
 }
 
+/// Reusable buffers for one L2 candidate.
+///
+/// Nothing in here carries across candidates, so one instance is threaded down
+/// from `map_fragment` and reset per candidate rather than rebuilt.
+#[derive(Debug, Default)]
+pub(crate) struct L2Scratch {
+    coords: Vec<HashValue>,
+    indexed: Vec<IndexedMinimizer>,
+    ref_by_hash: Vec<(HashValue, u32)>,
+    query_slots: Vec<u32>,
+    mapper: BitsetBottomSketchSlideMapper,
+}
+
+impl L2Scratch {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+}
+
 // Maintains the classic bottom-k union sketch exactly as an L2
 // reference window slides
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct BitsetBottomSketchSlideMapper {
     query_present: Vec<u8>,
     ref_count: Vec<u32>,
@@ -48,31 +67,46 @@ pub(crate) struct BitsetBottomSketchSlideMapper {
 }
 
 impl BitsetBottomSketchSlideMapper {
-    pub(crate) fn new(query_hashes: &[HashValue], coords: &[HashValue]) -> Self {
-        debug_assert!(!query_hashes.is_empty());
-        let mut query_present = vec![0u8; coords.len()];
-        let ref_count = vec![0u32; coords.len()];
-        let mut union_bits = SummaryBitSet::new(coords.len());
+    /// Point the mapper at a new coordinate universe, reusing the existing
+    /// allocations. `query_slots` holds the coordinate index of each query
+    /// hash, as produced by [`build_indexed_minimizers_into`]; it must be
+    /// non-empty and ascending. Every element in use is overwritten, so no
+    /// state leaks between candidates.
+    pub(crate) fn reset(&mut self, coord_len: usize, query_slots: &[u32]) {
+        debug_assert!(!query_slots.is_empty());
+        debug_assert!(query_slots.windows(2).all(|w| w[0] < w[1]));
 
-        for &hash in query_hashes {
-            let idx = coords
-                .binary_search(&hash)
-                .expect("query hash must be in coordinate universe");
-            query_present[idx] = 1;
-            union_bits.set(idx);
+        self.query_present.clear();
+        self.query_present.resize(coord_len, 0);
+        self.ref_count.clear();
+        self.ref_count.resize(coord_len, 0);
+        self.union_bits.reset(coord_len);
+        self.shared = 0;
+
+        for &slot in query_slots {
+            self.query_present[slot as usize] = 1;
+            self.union_bits.set(slot as usize);
         }
 
-        let pivot_idx = coords
-            .binary_search(&query_hashes[query_hashes.len() - 1])
-            .expect("query pivot must be in coordinate universe");
+        // The pivot starts at the largest query hash, i.e. the last slot.
+        self.pivot_idx = query_slots[query_slots.len() - 1] as usize;
+    }
 
-        Self {
-            query_present,
-            ref_count,
-            union_bits,
-            pivot_idx,
-            shared: 0,
-        }
+    /// Construct a mapper for a single universe. Test-facing convenience; the
+    /// mapping pipeline reuses one mapper via [`Self::reset`].
+    #[cfg(test)]
+    pub(crate) fn for_universe(query_hashes: &[HashValue], coords: &[HashValue]) -> Self {
+        let slots = query_hashes
+            .iter()
+            .map(|hash| {
+                coords
+                    .binary_search(hash)
+                    .expect("query hash must be in coordinate universe") as u32
+            })
+            .collect::<Vec<_>>();
+        let mut mapper = Self::default();
+        mapper.reset(coords.len(), &slots);
+        mapper
     }
 
     #[inline]
@@ -147,20 +181,28 @@ impl BitsetBottomSketchSlideMapper {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct SummaryBitSet {
     words: Vec<u64>,
     summary: Vec<u64>,
 }
 
 impl SummaryBitSet {
+    #[cfg(test)]
     pub(crate) fn new(len: usize) -> Self {
+        let mut bits = Self::default();
+        bits.reset(len);
+        bits
+    }
+
+    /// Resize to `len` bits, all clear, reusing the existing allocation.
+    pub(crate) fn reset(&mut self, len: usize) {
         let word_count = len.div_ceil(64);
         let summary_count = word_count.div_ceil(64);
-        Self {
-            words: vec![0; word_count],
-            summary: vec![0; summary_count],
-        }
+        self.words.clear();
+        self.words.resize(word_count, 0);
+        self.summary.clear();
+        self.summary.resize(summary_count, 0);
     }
 
     #[inline]
@@ -273,26 +315,105 @@ fn highest_set_bit(word: u64) -> usize {
     63 - word.leading_zeros() as usize
 }
 
+/// Build the local coordinate universe and index the reference minimizers into
+/// it, writing into caller-owned buffers so allocations are reused across
+/// candidates. Every buffer is fully overwritten.
+///
+/// `query_hashes` must already be sorted and deduplicated — `map_fragment`
+/// guarantees this. That lets the universe be produced by a merge rather than
+/// a sort of everything, and lets each element's final index be handed out
+/// during that merge. The previous version sorted the combined universe and
+/// then binary-searched it once per reference minimizer and once per query
+/// hash; profiling showed those ~710 searches per candidate were the dominant
+/// cost of L2 setup.
+///
+/// `query_slots` receives the coordinate index of each query hash in
+/// `query_hashes` order, so the slide mapper need not search for them either.
+///
+/// `coords` is identical to sorting the union directly: both are the ascending
+/// unique union of the same multiset.
+pub(crate) fn build_indexed_minimizers_into(
+    query_hashes: &[HashValue],
+    reference_universe: &[Minimizer],
+    coords: &mut Vec<HashValue>,
+    indexed: &mut Vec<IndexedMinimizer>,
+    ref_by_hash: &mut Vec<(HashValue, u32)>,
+    query_slots: &mut Vec<u32>,
+) {
+    debug_assert!(
+        query_hashes.windows(2).all(|w| w[0] < w[1]),
+        "query hashes must be sorted and deduplicated"
+    );
+
+    ref_by_hash.clear();
+    ref_by_hash.reserve(reference_universe.len());
+    ref_by_hash.extend(
+        reference_universe
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (m.hash, i as u32)),
+    );
+    ref_by_hash.sort_unstable();
+
+    indexed.clear();
+    indexed.resize(
+        reference_universe.len(),
+        IndexedMinimizer {
+            wpos: 0,
+            coord_idx: 0,
+        },
+    );
+    for (slot, minimizer) in indexed.iter_mut().zip(reference_universe) {
+        slot.wpos = minimizer.wpos;
+    }
+
+    coords.clear();
+    coords.reserve(query_hashes.len() + reference_universe.len());
+    query_slots.clear();
+    query_slots.reserve(query_hashes.len());
+
+    let mut qi = 0usize;
+    let mut ri = 0usize;
+    while qi < query_hashes.len() || ri < ref_by_hash.len() {
+        let take_query = ri >= ref_by_hash.len()
+            || (qi < query_hashes.len() && query_hashes[qi] <= ref_by_hash[ri].0);
+        let hash = if take_query {
+            query_hashes[qi]
+        } else {
+            ref_by_hash[ri].0
+        };
+
+        let coord_idx = coords.len();
+        coords.push(hash);
+        if take_query {
+            query_slots.push(coord_idx as u32);
+            qi += 1;
+        }
+        // Every reference minimizer carrying this hash maps to the same slot.
+        while ri < ref_by_hash.len() && ref_by_hash[ri].0 == hash {
+            indexed[ref_by_hash[ri].1 as usize].coord_idx = coord_idx;
+            ri += 1;
+        }
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn build_indexed_minimizers(
     query_hashes: &[HashValue],
     reference_universe: &[Minimizer],
 ) -> (Vec<HashValue>, Vec<IndexedMinimizer>) {
-    let mut coords = Vec::with_capacity(query_hashes.len() + reference_universe.len());
-    coords.extend_from_slice(query_hashes);
-    coords.extend(reference_universe.iter().map(|m| m.hash));
-    coords.sort_unstable();
-    coords.dedup();
-
-    let indexed = reference_universe
-        .iter()
-        .map(|minimizer| IndexedMinimizer {
-            wpos: minimizer.wpos,
-            coord_idx: coords
-                .binary_search(&minimizer.hash)
-                .expect("reference hash must be in coordinate universe"),
-        })
-        .collect();
-
+    let mut coords = Vec::new();
+    let mut indexed = Vec::new();
+    let mut ref_by_hash = Vec::new();
+    let mut query_slots = Vec::new();
+    build_indexed_minimizers_into(
+        query_hashes,
+        reference_universe,
+        &mut coords,
+        &mut indexed,
+        &mut ref_by_hash,
+        &mut query_slots,
+    );
     (coords, indexed)
 }
 
@@ -302,11 +423,12 @@ pub(crate) fn do_l2_mapping(
     reference: &ReferenceIndex,
     config: &AniConfig,
     window_size: usize,
+    scratch: &mut L2Scratch,
 ) -> Result<(Option<MappingResult>, L2Stats)> {
     if config.minimizer_mode == MinimizerMode::ScalarMinmer {
         return do_l2_mapping_minmer_intervals(query, candidate, reference, config);
     }
-    do_l2_mapping_bitset_exact(query, candidate, reference, config, window_size)
+    do_l2_mapping_bitset_exact(query, candidate, reference, config, window_size, scratch)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -368,7 +490,19 @@ fn do_l2_mapping_minmer_intervals(
     stats.reference_minimizers = overlapping.len();
     stats.windows = (candidate_end_exclusive - candidate_start) as u64;
 
-    let mut slide_map = BitsetBottomSketchSlideMapper::new(&query.unique_hashes, &coords);
+    // The minmer path is the FastANI-parity experiment, not the hot path, so
+    // it keeps its own short-lived mapper rather than sharing the scratch.
+    let mut slide_map = BitsetBottomSketchSlideMapper::default();
+    let query_slots = query
+        .unique_hashes
+        .iter()
+        .map(|hash| {
+            coords
+                .binary_search(hash)
+                .expect("query hash must be in coordinate universe") as u32
+        })
+        .collect::<Vec<_>>();
+    slide_map.reset(coords.len(), &query_slots);
     let mut events = Vec::new();
     for interval in overlapping {
         let coord_idx = coords
@@ -498,6 +632,7 @@ fn do_l2_mapping_bitset_exact(
     reference: &ReferenceIndex,
     config: &AniConfig,
     window_size: usize,
+    scratch: &mut L2Scratch,
 ) -> Result<(Option<MappingResult>, L2Stats)> {
     let mut stats = L2Stats::default();
     let count_minimizer_windows = query
@@ -535,9 +670,22 @@ fn do_l2_mapping_bitset_exact(
         return Ok((None, stats));
     }
 
-    let (coords, local_minimizers) = build_indexed_minimizers(
+    // Destructure so the coordinate universe can be read while the mapper is
+    // borrowed mutably -- they are disjoint fields of the same scratch.
+    let L2Scratch {
+        coords,
+        indexed: local_minimizers,
+        ref_by_hash,
+        query_slots,
+        mapper: slide_map,
+    } = scratch;
+    build_indexed_minimizers_into(
         &query.unique_hashes,
         &reference.minimizers[sw_beg_abs..coord_end_abs],
+        coords,
+        local_minimizers,
+        ref_by_hash,
+        query_slots,
     );
     stats.coord_count = coords.len();
     stats.reference_minimizers = local_minimizers.len();
@@ -551,7 +699,7 @@ fn do_l2_mapping_bitset_exact(
         .min(local_minimizers.len());
     let mut sw_pos = local_minimizers[sw_beg].wpos;
 
-    let mut slide_map = BitsetBottomSketchSlideMapper::new(&query.unique_hashes, &coords);
+    slide_map.reset(coords.len(), query_slots);
     slide_map.insert_ref_range(&local_minimizers[sw_beg..sw_end.min(local_minimizers.len())]);
     let mut prev_beg = sw_beg;
     let mut prev_end = sw_end;
