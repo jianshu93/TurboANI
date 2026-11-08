@@ -1,6 +1,6 @@
 [package]
 name = "turboani"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 default-run = "turboani"
 repository = "https://github.com/jianshu93/TurboANI.git"
