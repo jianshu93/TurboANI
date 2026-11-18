@@ -245,4 +245,4 @@ RUSTFLAGS="-C target-cpu=native" cargo build --release
 The implementation skips minimizer windows spanning ambiguous bases before passing sequence runs to `simd-minimizers`. This is usually preferable for Rust SIMD packing and keeps `N`-rich phage assemblies from creating artificial seeds.
 
 ## References
-Paper to come
+Zhao J, McDonald D, Patel L, Wang C, Gonzalez A, Knight R. Homology-aware average nucleotide identity estimation at scale with TurboANI. bioRxiv. 2026:2026-11. https://www.biorxiv.org/content/10.64898/2026.11.05.764740v1.abstract
