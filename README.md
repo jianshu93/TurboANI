@@ -239,10 +239,14 @@ git clone https://github.com/jianshu93/TurboANI
 RUSTFLAGS="-C target-cpu=native" cargo build --release
 ./target/release/turboani -h
 ```
+## Application notes
+For downstream application such as genome deduplication at a given ANI, or species/strain identification/classification at a given ANI, say 95% or 99.5%, one can choose a much larger identity via "--minIdentity 90" for example to 95% ANI and "--minIdentity 95" for 99.5% ANI. This will not affect large ANIs we care about but it will be orders of magnitude faster. 
 
 
 ## Notes
 The implementation skips minimizer windows spanning ambiguous bases before passing sequence runs to `simd-minimizers`. This is usually preferable for Rust SIMD packing and keeps `N`-rich phage assemblies from creating artificial seeds.
+
+
 
 ## References
 Zhao J, McDonald D, Patel L, Wang C, Gonzalez A, Knight R. Homology-aware average nucleotide identity estimation at scale with TurboANI. bioRxiv. 2026:2026-11. https://www.biorxiv.org/content/10.64898/2026.11.05.764740v1.abstract
