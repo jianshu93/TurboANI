@@ -13,7 +13,8 @@
 </div>
 
 # TurboANI🦀
-TurboANI is a super fast  Average Nucleotide Identity (or ANI) estimation algorithm. It will replace FastANI as the new community standard for ANI estimation. It is implemented in pure Rust:
+TurboANI is a super fast, homology-aware Average Nucleotide Identity (or ANI) estimation algorithm. 
+***It will replace FastANI as the new community standard for ANI estimation.***
 
 The main algorithm flow:
 
