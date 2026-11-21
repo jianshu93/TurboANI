@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use crate::candidate_window::{L1Candidate, L1Stats};
 use crate::compute_identity::estimate_minimum_hits_relaxed_with_model;
 use crate::{AniConfig, Offset, QuerySketch, ReferenceIndex, SeqId};
@@ -143,16 +145,30 @@ pub(crate) fn do_l1_mapping_diagonal_then_chained(
     query: &QuerySketch,
     reference: &ReferenceIndex,
     config: &AniConfig,
+    allowed_contigs: &Range<SeqId>,
 ) -> (Vec<L1Candidate>, L1Stats) {
-    do_l1_mapping_diagonal_impl(query, reference, config, DiagonalRefine::ChainX)
+    do_l1_mapping_diagonal_impl(
+        query,
+        reference,
+        config,
+        allowed_contigs,
+        DiagonalRefine::ChainX,
+    )
 }
 
 pub(crate) fn do_l1_mapping_diagonal_then_rammap(
     query: &QuerySketch,
     reference: &ReferenceIndex,
     config: &AniConfig,
+    allowed_contigs: &Range<SeqId>,
 ) -> (Vec<L1Candidate>, L1Stats) {
-    do_l1_mapping_diagonal_impl(query, reference, config, DiagonalRefine::Rammap)
+    do_l1_mapping_diagonal_impl(
+        query,
+        reference,
+        config,
+        allowed_contigs,
+        DiagonalRefine::Rammap,
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,6 +181,7 @@ fn do_l1_mapping_diagonal_impl(
     query: &QuerySketch,
     reference: &ReferenceIndex,
     config: &AniConfig,
+    allowed_contigs: &Range<SeqId>,
     refine: DiagonalRefine,
 ) -> (Vec<L1Candidate>, L1Stats) {
     let diag_cluster_bin = config.diag_cluster_bin as isize;
@@ -178,11 +195,16 @@ fn do_l1_mapping_diagonal_impl(
     .max(1);
 
     let mut hits = Vec::new();
+    let filter_contigs =
+        allowed_contigs.start != 0 || allowed_contigs.end < reference.contigs.len();
     for seed in &query.unique_seeds {
         if let Some(ref_hits) = reference.lookup.get(seed.hash) {
             if ref_hits.len() < reference.freq_threshold {
                 hits.reserve(ref_hits.len());
                 for &hit in ref_hits {
+                    if filter_contigs && !allowed_contigs.contains(&hit.seq_id()) {
+                        continue;
+                    }
                     let wpos = hit.wpos();
                     let diagonal = wpos as isize - seed.qpos as isize;
                     hits.push(DiagonalClusterHit::new(

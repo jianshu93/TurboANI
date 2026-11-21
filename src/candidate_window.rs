@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::ops::Range;
 
 use crate::compute_identity::estimate_minimum_hits_relaxed_with_model;
 use crate::simd_minimizer::MinimizerMode;
@@ -56,18 +57,29 @@ pub(crate) fn do_l1_mapping(
     query: &QuerySketch,
     reference: &ReferenceIndex,
     config: &AniConfig,
+    allowed_contigs: &Range<SeqId>,
 ) -> (Vec<L1Candidate>, L1Stats) {
     if config.minimizer_mode == MinimizerMode::Scalar {
-        return do_l1_mapping_fastani_exact(query, reference, config);
+        return do_l1_mapping_fastani_exact(query, reference, config, allowed_contigs);
     }
     if config.minimizer_mode == MinimizerMode::ScalarMinmer {
-        return do_l1_mapping_minmer_intervals(query, reference, config);
+        return do_l1_mapping_minmer_intervals(query, reference, config, allowed_contigs);
     }
 
     if config.chain {
-        crate::chaining::do_l1_mapping_diagonal_then_chained(query, reference, config)
+        crate::chaining::do_l1_mapping_diagonal_then_chained(
+            query,
+            reference,
+            config,
+            allowed_contigs,
+        )
     } else {
-        crate::chaining::do_l1_mapping_diagonal_then_rammap(query, reference, config)
+        crate::chaining::do_l1_mapping_diagonal_then_rammap(
+            query,
+            reference,
+            config,
+            allowed_contigs,
+        )
     }
 }
 
@@ -75,13 +87,21 @@ fn do_l1_mapping_fastani_exact(
     query: &QuerySketch,
     reference: &ReferenceIndex,
     config: &AniConfig,
+    allowed_contigs: &Range<SeqId>,
 ) -> (Vec<L1Candidate>, L1Stats) {
     let mut seed_hits = Vec::new();
+    let filter_contigs =
+        allowed_contigs.start != 0 || allowed_contigs.end < reference.contigs.len();
 
     for &hash in &query.unique_hashes {
         if let Some(hits) = reference.lookup.get(hash) {
             if hits.len() < reference.freq_threshold {
-                seed_hits.extend(hits.iter().copied().map(PackedMinimizerHit::unpack));
+                seed_hits.extend(
+                    hits.iter()
+                        .copied()
+                        .filter(|hit| !filter_contigs || allowed_contigs.contains(&hit.seq_id()))
+                        .map(PackedMinimizerHit::unpack),
+                );
             }
         }
     }
@@ -114,6 +134,7 @@ fn do_l1_mapping_minmer_intervals(
     query: &QuerySketch,
     reference: &ReferenceIndex,
     config: &AniConfig,
+    allowed_contigs: &Range<SeqId>,
 ) -> (Vec<L1Candidate>, L1Stats) {
     let Some(lookup) = reference.minmer_lookup.as_ref() else {
         return (Vec::new(), L1Stats::default());
@@ -121,13 +142,18 @@ fn do_l1_mapping_minmer_intervals(
 
     let mut events = Vec::new();
     let mut seed_hits = 0usize;
+    let filter_contigs =
+        allowed_contigs.start != 0 || allowed_contigs.end < reference.contigs.len();
     for &hash in &query.unique_hashes {
         if let Some(intervals) = lookup.get(hash) {
             if intervals.len() >= reference.freq_threshold {
                 continue;
             }
-            seed_hits += intervals.len();
             for interval in intervals {
+                if filter_contigs && !allowed_contigs.contains(&interval.seq_id()) {
+                    continue;
+                }
+                seed_hits += 1;
                 if interval.start() >= interval.end() {
                     continue;
                 }

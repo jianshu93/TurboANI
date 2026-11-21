@@ -23,8 +23,10 @@ pub use plot::write_pair_visualization_pdf;
 pub use simd_minimizer::{MinimizerMode, TabulationMode};
 pub use utils::{
     AniConfig, AniResult, MappingCounters, QueryTiming, ReferenceTiming, RunOutput, TimingReport,
-    compare_paths, compare_paths_split_with_timing, compare_paths_with_timing,
-    format_timing_summary, read_path_list, write_phylip_matrix, write_results, write_timing_report,
+    compare_paths, compare_paths_split_with_timing, compare_paths_upper_triangle_split_with_timing,
+    compare_paths_upper_triangle_with_timing, compare_paths_with_timing, format_timing_summary,
+    read_path_list, write_phylip_matrix, write_results, write_results_upper_triangle,
+    write_timing_report,
 };
 
 pub(crate) use utils::{

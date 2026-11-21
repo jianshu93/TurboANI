@@ -555,13 +555,76 @@ pub fn compare_paths_with_timing(
     ref_paths: &[PathBuf],
     config: &AniConfig,
 ) -> Result<RunOutput> {
-    compare_paths_with_timing_inner(query_paths, ref_paths, config, None)
+    compare_paths_with_timing_inner(query_paths, ref_paths, config, PairSelection::All, 0, None)
+}
+
+pub fn compare_paths_upper_triangle_with_timing(
+    query_paths: &[PathBuf],
+    ref_paths: &[PathBuf],
+    config: &AniConfig,
+) -> Result<RunOutput> {
+    validate_upper_triangle_paths(query_paths, ref_paths)?;
+    compare_paths_with_timing_inner(
+        query_paths,
+        ref_paths,
+        config,
+        PairSelection::UpperTriangle,
+        0,
+        None,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PairSelection {
+    All,
+    UpperTriangle,
+}
+
+impl PairSelection {
+    fn allowed_reference_genomes(
+        self,
+        query_idx: usize,
+        ref_count: usize,
+        ref_offset: usize,
+    ) -> std::ops::Range<usize> {
+        match self {
+            Self::All => 0..ref_count,
+            Self::UpperTriangle => {
+                let first_global_ref = query_idx.saturating_add(1);
+                let first_local_ref = first_global_ref.saturating_sub(ref_offset).min(ref_count);
+                first_local_ref..ref_count
+            }
+        }
+    }
+
+    fn pair_count(self, query_count: usize, ref_count: usize, ref_offset: usize) -> u64 {
+        (0..query_count).fold(0u64, |total, query_idx| {
+            total.saturating_add(usize_to_u64_saturating(
+                self.allowed_reference_genomes(query_idx, ref_count, ref_offset)
+                    .len(),
+            ))
+        })
+    }
+}
+
+fn validate_upper_triangle_paths(query_paths: &[PathBuf], ref_paths: &[PathBuf]) -> Result<()> {
+    anyhow::ensure!(
+        query_paths.len() == ref_paths.len(),
+        "--triangle requires query and reference lists with the same number of genomes"
+    );
+    anyhow::ensure!(
+        query_paths == ref_paths,
+        "--triangle requires identical query and reference lists in the same order"
+    );
+    Ok(())
 }
 
 fn compare_paths_with_timing_inner(
     query_paths: &[PathBuf],
     ref_paths: &[PathBuf],
     config: &AniConfig,
+    pair_selection: PairSelection,
+    ref_offset: usize,
     shared_pair_progress: Option<&ProgressBar>,
 ) -> Result<RunOutput> {
     config.validate()?;
@@ -587,9 +650,7 @@ fn compare_paths_with_timing_inner(
     let distance_cache =
         DistanceTableCache::new(config.kmer_size, config.fragment_len, config.distance_model);
 
-    let pair_total = usize_to_u64_saturating(query_paths.len())
-        .saturating_mul(usize_to_u64_saturating(ref_paths.len()));
-    let pair_step = usize_to_u64_saturating(ref_paths.len());
+    let pair_total = pair_selection.pair_count(query_paths.len(), ref_paths.len(), ref_offset);
     let pair_progress = shared_pair_progress.cloned().unwrap_or_else(|| {
         progress_bar(
             config.show_progress,
@@ -603,7 +664,11 @@ fn compare_paths_with_timing_inner(
     });
     let per_query = query_paths
         .par_iter()
-        .map(|path| {
+        .enumerate()
+        .map(|(query_idx, path)| {
+            let allowed_genomes =
+                pair_selection.allowed_reference_genomes(query_idx, ref_paths.len(), ref_offset);
+            let pair_step = usize_to_u64_saturating(allowed_genomes.len());
             let result = (|| {
                 let query_total_start = Instant::now();
                 let read_start = Instant::now();
@@ -611,8 +676,14 @@ fn compare_paths_with_timing_inner(
                 let read_wall_ns = read_start.elapsed().as_nanos();
 
                 let map_start = Instant::now();
-                let (mappings, counters) =
-                    map_query_file(&query, &reference, config, window_size, &distance_cache)?;
+                let (mappings, counters) = map_query_file_for_genomes(
+                    &query,
+                    &reference,
+                    config,
+                    window_size,
+                    &distance_cache,
+                    allowed_genomes,
+                )?;
                 let map_wall_ns = map_start.elapsed().as_nanos();
 
                 let ani_start = Instant::now();
@@ -673,6 +744,38 @@ pub fn compare_paths_split_with_timing(
     config: &AniConfig,
     split_count: usize,
 ) -> Result<RunOutput> {
+    compare_paths_split_with_timing_mode(
+        query_paths,
+        ref_paths,
+        config,
+        split_count,
+        PairSelection::All,
+    )
+}
+
+pub fn compare_paths_upper_triangle_split_with_timing(
+    query_paths: &[PathBuf],
+    ref_paths: &[PathBuf],
+    config: &AniConfig,
+    split_count: usize,
+) -> Result<RunOutput> {
+    validate_upper_triangle_paths(query_paths, ref_paths)?;
+    compare_paths_split_with_timing_mode(
+        query_paths,
+        ref_paths,
+        config,
+        split_count,
+        PairSelection::UpperTriangle,
+    )
+}
+
+fn compare_paths_split_with_timing_mode(
+    query_paths: &[PathBuf],
+    ref_paths: &[PathBuf],
+    config: &AniConfig,
+    split_count: usize,
+    pair_selection: PairSelection,
+) -> Result<RunOutput> {
     config.validate()?;
     anyhow::ensure!(split_count >= 2, "--split must be at least 2");
     anyhow::ensure!(
@@ -690,8 +793,7 @@ pub fn compare_paths_split_with_timing(
     let mut reference_timing = ReferenceTiming::default();
     let mut aggregate = MappingCounters::default();
     let mut query_timing_by_path: HashMap<PathBuf, QueryTiming> = HashMap::new();
-    let pair_total = usize_to_u64_saturating(query_paths.len())
-        .saturating_mul(usize_to_u64_saturating(ref_paths.len()));
+    let pair_total = pair_selection.pair_count(query_paths.len(), ref_paths.len(), 0);
     let pair_progress = progress_bar(
         config.show_progress,
         pair_total,
@@ -699,6 +801,7 @@ pub fn compare_paths_split_with_timing(
     );
 
     for (chunk_idx, ref_chunk) in ref_paths.chunks(split_size).enumerate() {
+        let ref_offset = chunk_idx * split_size;
         log::debug!(
             "phase=start_split_reference_chunk chunk={} split_count={} refs={} total_refs={}",
             chunk_idx + 1,
@@ -706,8 +809,14 @@ pub fn compare_paths_split_with_timing(
             ref_chunk.len(),
             ref_paths.len()
         );
-        let chunk_run =
-            compare_paths_with_timing_inner(query_paths, ref_chunk, config, Some(&pair_progress))?;
+        let chunk_run = compare_paths_with_timing_inner(
+            query_paths,
+            ref_chunk,
+            config,
+            pair_selection,
+            ref_offset,
+            Some(&pair_progress),
+        )?;
         log::debug!(
             "phase=end_split_reference_chunk chunk={} split_count={} refs={} elapsed={:.6}s results={}",
             chunk_idx + 1,
@@ -819,6 +928,52 @@ pub fn write_results(path: impl AsRef<Path>, results: &[AniResult]) -> Result<()
         .with_context(|| format!("failed to create {}", path.as_ref().display()))?;
     let mut out = BufWriter::new(file);
     for result in results {
+        writeln!(
+            out,
+            "{}\t{}\t{:.6}\t{}\t{}",
+            result.query.display(),
+            result.reference.display(),
+            result.ani,
+            result.mapped_fragments,
+            result.total_query_fragments
+        )?;
+    }
+    Ok(())
+}
+
+pub fn write_results_upper_triangle(
+    path: impl AsRef<Path>,
+    query_paths: &[PathBuf],
+    ref_paths: &[PathBuf],
+    results: &[AniResult],
+) -> Result<()> {
+    validate_upper_triangle_paths(query_paths, ref_paths)?;
+    let query_to_index = query_paths
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(idx, path)| (path, idx))
+        .collect::<HashMap<_, _>>();
+    let ref_to_index = ref_paths
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(idx, path)| (path, idx))
+        .collect::<HashMap<_, _>>();
+
+    let file = fs::File::create(path.as_ref())
+        .with_context(|| format!("failed to create {}", path.as_ref().display()))?;
+    let mut out = BufWriter::new(file);
+    for result in results {
+        let Some(&query_idx) = query_to_index.get(&result.query) else {
+            continue;
+        };
+        let Some(&ref_idx) = ref_to_index.get(&result.reference) else {
+            continue;
+        };
+        if query_idx >= ref_idx {
+            continue;
+        }
         writeln!(
             out,
             "{}\t{}\t{:.6}\t{}\t{}",
@@ -1290,6 +1445,19 @@ impl ReferenceIndex {
     pub(crate) fn contig_minmer_bounds(&self, seq_id: SeqId) -> std::ops::Range<usize> {
         self.contig_minmer_ranges[seq_id].clone()
     }
+
+    fn contig_id_range_for_genomes(
+        &self,
+        genomes: std::ops::Range<usize>,
+    ) -> std::ops::Range<SeqId> {
+        let start = self
+            .contigs
+            .partition_point(|contig| contig.genome_id < genomes.start);
+        let end = self
+            .contigs
+            .partition_point(|contig| contig.genome_id < genomes.end);
+        start..end
+    }
 }
 
 fn read_reference_genome(
@@ -1383,6 +1551,7 @@ pub(crate) fn read_query_file(path: &Path, config: &AniConfig) -> Result<QueryFi
     })
 }
 
+#[cfg_attr(not(feature = "visual"), allow(dead_code))]
 pub(crate) fn map_query_file(
     query: &QueryFileData,
     reference: &ReferenceIndex,
@@ -1390,6 +1559,29 @@ pub(crate) fn map_query_file(
     window_size: usize,
     distance_cache: &DistanceTableCache,
 ) -> Result<(Vec<MappingResult>, MappingCounters)> {
+    map_query_file_for_genomes(
+        query,
+        reference,
+        config,
+        window_size,
+        distance_cache,
+        0..reference.genomes.len(),
+    )
+}
+
+fn map_query_file_for_genomes(
+    query: &QueryFileData,
+    reference: &ReferenceIndex,
+    config: &AniConfig,
+    window_size: usize,
+    distance_cache: &DistanceTableCache,
+    allowed_genomes: std::ops::Range<usize>,
+) -> Result<(Vec<MappingResult>, MappingCounters)> {
+    if allowed_genomes.is_empty() {
+        return Ok((Vec::new(), MappingCounters::default()));
+    }
+    let allowed_contigs = reference.contig_id_range_for_genomes(allowed_genomes);
+
     let tab_hasher = deterministic_tabulation_hasher(config.tab_hash_seed, config.tabulation_mode);
     let per_fragment = query
         .fragments
@@ -1402,6 +1594,7 @@ pub(crate) fn map_query_file(
                 window_size,
                 &tab_hasher,
                 distance_cache,
+                &allowed_contigs,
             )
         })
         .collect::<Result<Vec<_>>>()?;
@@ -1423,6 +1616,7 @@ fn map_fragment(
     window_size: usize,
     tab_hasher: &TabulationHasher,
     distance_cache: &DistanceTableCache,
+    allowed_contigs: &std::ops::Range<SeqId>,
 ) -> Result<(Vec<MappingResult>, MappingCounters)> {
     let mut counters = MappingCounters {
         fragments: 1,
@@ -1460,7 +1654,8 @@ fn map_fragment(
     };
 
     let l1_start = Instant::now();
-    let (l1_candidates, l1_stats) = do_l1_mapping(&query_sketch, reference, config);
+    let (l1_candidates, l1_stats) =
+        do_l1_mapping(&query_sketch, reference, config, allowed_contigs);
     counters.l1_ns += l1_start.elapsed().as_nanos();
     counters.seed_hits += l1_stats.seed_hits as u64;
     counters.l1_candidates += l1_candidates.len() as u64;
@@ -1746,6 +1941,117 @@ mod tests {
         let matrix = fs::read_to_string(matrix_path)?;
 
         assert_eq!(matrix, "3\nA.fa\nB.fa\t97.500000\nC.fa\t90.000000\tNA\n");
+        Ok(())
+    }
+
+    #[test]
+    fn upper_triangle_pair_ranges_respect_split_offsets() {
+        let unsplit = PairSelection::UpperTriangle;
+        assert_eq!(unsplit.pair_count(4, 4, 0), 6);
+        assert_eq!(unsplit.allowed_reference_genomes(0, 4, 0), 1..4);
+        assert_eq!(unsplit.allowed_reference_genomes(3, 4, 0), 4..4);
+
+        assert_eq!(unsplit.pair_count(4, 2, 0), 1);
+        assert_eq!(unsplit.pair_count(4, 2, 2), 5);
+        assert_eq!(unsplit.allowed_reference_genomes(0, 2, 0), 1..2);
+        assert_eq!(unsplit.allowed_reference_genomes(0, 2, 2), 0..2);
+        assert_eq!(unsplit.allowed_reference_genomes(2, 2, 2), 1..2);
+        assert_eq!(unsplit.allowed_reference_genomes(3, 2, 2), 2..2);
+    }
+
+    #[test]
+    fn upper_triangle_comparison_skips_reverse_and_diagonal_pairs() -> Result<()> {
+        let dir = tempdir()?;
+        let paths = [
+            dir.path().join("A.fa"),
+            dir.path().join("B.fa"),
+            dir.path().join("C.fa"),
+        ];
+        let seq = deterministic_dna(4000);
+        for (idx, path) in paths.iter().enumerate() {
+            fs::write(path, format!(">genome_{idx}\n{seq}\n"))?;
+        }
+
+        let config = AniConfig {
+            kmer_size: 8,
+            fragment_len: 1000,
+            min_identity: 70.0,
+            min_fraction: 0.0,
+            window_size: Some(10),
+            ..AniConfig::default()
+        };
+        let paths = paths.to_vec();
+        let run = compare_paths_upper_triangle_with_timing(&paths, &paths, &config)?;
+        assert_eq!(run.results.len(), 3);
+        for result in &run.results {
+            let query_idx = paths.iter().position(|path| path == &result.query).unwrap();
+            let ref_idx = paths
+                .iter()
+                .position(|path| path == &result.reference)
+                .unwrap();
+            assert!(query_idx < ref_idx);
+        }
+
+        let split = compare_paths_upper_triangle_split_with_timing(&paths, &paths, &config, 2)?;
+        assert_eq!(split.results.len(), run.results.len());
+        for (expected, observed) in run.results.iter().zip(&split.results) {
+            assert_eq!(observed.query, expected.query);
+            assert_eq!(observed.reference, expected.reference);
+            assert!((observed.ani - expected.ani).abs() < 1e-12);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn upper_triangle_comparison_rejects_different_lists() {
+        let query_paths = vec![PathBuf::from("A.fa"), PathBuf::from("B.fa")];
+        let ref_paths = vec![PathBuf::from("A.fa"), PathBuf::from("C.fa")];
+        let error = compare_paths_upper_triangle_with_timing(
+            &query_paths,
+            &ref_paths,
+            &AniConfig::default(),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("identical query and reference lists")
+        );
+    }
+
+    #[test]
+    fn upper_triangle_writer_filters_full_reciprocal_results() -> Result<()> {
+        let dir = tempdir()?;
+        let out = dir.path().join("triangle.tsv");
+        let a = PathBuf::from("A.fa");
+        let b = PathBuf::from("B.fa");
+        let paths = vec![a.clone(), b.clone()];
+        let results = vec![
+            AniResult {
+                query: a.clone(),
+                reference: a.clone(),
+                ani: 100.0,
+                mapped_fragments: 10,
+                total_query_fragments: 10,
+            },
+            AniResult {
+                query: a.clone(),
+                reference: b.clone(),
+                ani: 97.0,
+                mapped_fragments: 9,
+                total_query_fragments: 10,
+            },
+            AniResult {
+                query: b,
+                reference: a,
+                ani: 98.0,
+                mapped_fragments: 9,
+                total_query_fragments: 10,
+            },
+        ];
+
+        write_results_upper_triangle(&out, &paths, &paths, &results)?;
+        assert_eq!(fs::read_to_string(out)?, "A.fa\tB.fa\t97.000000\t9\t10\n");
         Ok(())
     }
 

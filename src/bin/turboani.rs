@@ -5,8 +5,9 @@ use clap::{Arg, ArgAction, ArgGroup, Command};
 use log::info;
 use turboani::{
     AniConfig, DistanceModel, MinimizerMode, TabulationMode, TimingReport,
-    compare_paths_split_with_timing, compare_paths_with_timing, format_timing_summary,
-    read_path_list, write_phylip_matrix, write_results,
+    compare_paths_split_with_timing, compare_paths_upper_triangle_split_with_timing,
+    compare_paths_upper_triangle_with_timing, compare_paths_with_timing, format_timing_summary,
+    read_path_list, write_phylip_matrix, write_results, write_results_upper_triangle,
 };
 
 fn main() -> Result<()> {
@@ -216,7 +217,15 @@ fn main() -> Result<()> {
                 )
                 .action(ArgAction::SetTrue),
         )
-        ;
+        .arg(
+            Arg::new("triangle")
+                .long("triangle")
+                .help(
+                    "For identical ordered --ql and --rl lists, compute and write only pairs with query index < reference index and omit self comparisons",
+                )
+                .conflicts_with("matrix")
+                .action(ArgAction::SetTrue),
+        );
     let m = add_visualize_arg(m)
         .arg(
             Arg::new("split")
@@ -248,6 +257,8 @@ fn main() -> Result<()> {
     let query_list_path = m.get_one::<PathBuf>("query-list").cloned();
     let reference_path = m.get_one::<PathBuf>("reference").cloned();
     let ref_list_path = m.get_one::<PathBuf>("ref-list").cloned();
+    let query_list_mode = query_list_path.is_some();
+    let ref_list_mode = ref_list_path.is_some();
     let output_path = m.get_one::<PathBuf>("output").unwrap();
     let kmer_size = *m.get_one::<usize>("kmer-size").unwrap();
     let fragment_len = *m.get_one::<usize>("fragment-len").unwrap();
@@ -272,6 +283,7 @@ fn main() -> Result<()> {
     let distance_model = DistanceModel::from_code(*m.get_one::<u8>("model").unwrap())
         .context("--model must be 0 for Poisson or 1 for binomial")?;
     let matrix = m.get_flag("matrix");
+    let triangle = m.get_flag("triangle");
     #[cfg(feature = "visual")]
     let visualize_path = m.get_one::<PathBuf>("visualize");
     let split_count = m.get_one::<usize>("split").copied();
@@ -291,6 +303,21 @@ fn main() -> Result<()> {
 
     let query_paths = input_paths(query_path, query_list_path)?;
     let ref_paths = input_paths(reference_path, ref_list_path)?;
+
+    if triangle {
+        anyhow::ensure!(
+            query_list_mode && ref_list_mode,
+            "--triangle requires both --ql and --rl"
+        );
+        anyhow::ensure!(
+            query_paths.len() == ref_paths.len(),
+            "--triangle requires query and reference lists with the same number of genomes"
+        );
+        anyhow::ensure!(
+            query_paths == ref_paths,
+            "--triangle requires identical query and reference lists in the same order"
+        );
+    }
 
     #[cfg(feature = "visual")]
     if visualize_path.is_some() && (query_paths.len() != 1 || ref_paths.len() != 1) {
@@ -330,12 +357,27 @@ fn main() -> Result<()> {
     );
 
     let run = if let Some(split_count) = split_count {
-        compare_paths_split_with_timing(&query_paths, &ref_paths, &config, split_count)?
+        if triangle {
+            compare_paths_upper_triangle_split_with_timing(
+                &query_paths,
+                &ref_paths,
+                &config,
+                split_count,
+            )?
+        } else {
+            compare_paths_split_with_timing(&query_paths, &ref_paths, &config, split_count)?
+        }
+    } else if triangle {
+        compare_paths_upper_triangle_with_timing(&query_paths, &ref_paths, &config)?
     } else {
         compare_paths_with_timing(&query_paths, &ref_paths, &config)?
     };
 
-    write_results(output_path, &run.results)?;
+    if triangle {
+        write_results_upper_triangle(output_path, &query_paths, &ref_paths, &run.results)?;
+    } else {
+        write_results(output_path, &run.results)?;
+    }
 
     if matrix {
         write_phylip_matrix(output_path, &query_paths, &ref_paths, &run.results)?;

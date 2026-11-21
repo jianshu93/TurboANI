@@ -148,6 +148,23 @@ List mode is also supported (one file per line, .gz supported):
   -o turboani.tsv \
 ```
 
+For an all-versus-all comparison, `--triangle` computes and writes only pairs
+with `query_index < reference_index`. The query and reference lists must contain
+the same genome paths in the same order; self-comparisons and the reciprocal
+lower triangle are omitted:
+
+```bash
+./target/release/turboani \
+  --ql genomes.txt \
+  --rl genomes.txt \
+  --triangle \
+  -o turboani-upper.tsv
+```
+
+`--triangle` also works with `--split`. `--triangle` and `--matrix` are mutually
+exclusive: triangle mode keeps one positional region, whereas matrix mode
+computes both directions and averages reciprocal ANI estimates.
+
 Output columns match FastANI:
 
 ```text
