@@ -33,14 +33,13 @@ fn main() -> Result<()> {
             Arg::new("query-list")
                 .long("ql")
                 .alias("queryList")
-                .help("Text file containing one query genome path per line")
+                .help("Text file containing one query genome path per line; when supplied alone, reuse it as the reference list and compute the upper triangle")
                 .value_name("QUERY_LIST")
                 .value_parser(clap::value_parser!(PathBuf)),
         )
         .group(
             ArgGroup::new("query-input")
                 .args(["query", "query-list"])
-                .required(true)
                 .multiple(false),
         )
         .arg(
@@ -55,14 +54,13 @@ fn main() -> Result<()> {
             Arg::new("ref-list")
                 .long("rl")
                 .alias("refList")
-                .help("Text file containing one reference genome path per line")
+                .help("Text file containing one reference genome path per line; when supplied alone, reuse it as the query list and compute the upper triangle")
                 .value_name("REFERENCE_LIST")
                 .value_parser(clap::value_parser!(PathBuf)),
         )
         .group(
             ArgGroup::new("reference-input")
                 .args(["reference", "ref-list"])
-                .required(true)
                 .multiple(false),
         )
         .arg(
@@ -221,7 +219,7 @@ fn main() -> Result<()> {
             Arg::new("triangle")
                 .long("triangle")
                 .help(
-                    "For identical ordered --ql and --rl lists, compute and write only pairs with query index < reference index and omit self comparisons",
+                    "For identical ordered --ql and --rl lists, compute and write only pairs with query index < reference index and omit self comparisons; this mode is automatic when only --ql or --rl is provided",
                 )
                 .conflicts_with("matrix")
                 .action(ArgAction::SetTrue),
@@ -283,7 +281,7 @@ fn main() -> Result<()> {
     let distance_model = DistanceModel::from_code(*m.get_one::<u8>("model").unwrap())
         .context("--model must be 0 for Poisson or 1 for binomial")?;
     let matrix = m.get_flag("matrix");
-    let triangle = m.get_flag("triangle");
+    let explicit_triangle = m.get_flag("triangle");
     #[cfg(feature = "visual")]
     let visualize_path = m.get_one::<PathBuf>("visualize");
     let split_count = m.get_one::<usize>("split").copied();
@@ -301,13 +299,46 @@ fn main() -> Result<()> {
 
     info!("using {} rayon threads", rayon::current_num_threads());
 
-    let query_paths = input_paths(query_path, query_list_path)?;
-    let ref_paths = input_paths(reference_path, ref_list_path)?;
+    let single_list_source = resolve_single_list_source(
+        query_path.as_ref(),
+        query_list_path.as_ref(),
+        reference_path.as_ref(),
+        ref_list_path.as_ref(),
+    )?;
+    let triangle = explicit_triangle || single_list_source.is_some();
+
+    anyhow::ensure!(
+        !(matrix && single_list_source.is_some()),
+        "--matrix requires both query and reference inputs; provide the same list with both --ql and --rl to compute and average reciprocal ANI values"
+    );
+
+    let (query_paths, ref_paths) = match single_list_source {
+        Some(SingleListSource::Query) => {
+            let paths = read_path_list(query_list_path.as_ref().unwrap())?;
+            info!(
+                "only --ql was provided; automatically computing {} upper-triangle genome pairs",
+                paths.len().saturating_mul(paths.len().saturating_sub(1)) / 2
+            );
+            (paths.clone(), paths)
+        }
+        Some(SingleListSource::Reference) => {
+            let paths = read_path_list(ref_list_path.as_ref().unwrap())?;
+            info!(
+                "only --rl was provided; automatically computing {} upper-triangle genome pairs",
+                paths.len().saturating_mul(paths.len().saturating_sub(1)) / 2
+            );
+            (paths.clone(), paths)
+        }
+        None => (
+            input_paths(query_path, query_list_path)?,
+            input_paths(reference_path, ref_list_path)?,
+        ),
+    };
 
     if triangle {
         anyhow::ensure!(
-            query_list_mode && ref_list_mode,
-            "--triangle requires both --ql and --rl"
+            single_list_source.is_some() || (query_list_mode && ref_list_mode),
+            "--triangle requires list input: provide one of --ql/--rl, or provide both with identical ordered lists"
         );
         anyhow::ensure!(
             query_paths.len() == ref_paths.len(),
@@ -427,5 +458,77 @@ fn input_paths(single: Option<PathBuf>, list: Option<PathBuf>) -> Result<Vec<Pat
         read_path_list(path)
     } else {
         anyhow::bail!("provide either a single path or a list path")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SingleListSource {
+    Query,
+    Reference,
+}
+
+fn resolve_single_list_source(
+    query: Option<&PathBuf>,
+    query_list: Option<&PathBuf>,
+    reference: Option<&PathBuf>,
+    ref_list: Option<&PathBuf>,
+) -> Result<Option<SingleListSource>> {
+    let has_query_input = query.is_some() || query_list.is_some();
+    let has_reference_input = reference.is_some() || ref_list.is_some();
+
+    match (has_query_input, has_reference_input) {
+        (true, true) => Ok(None),
+        (false, false) => anyhow::bail!("provide at least one query or reference input"),
+        (true, false) if query_list.is_some() => Ok(Some(SingleListSource::Query)),
+        (false, true) if ref_list.is_some() => Ok(Some(SingleListSource::Reference)),
+        (true, false) => anyhow::bail!(
+            "a single -q/--query genome requires -r/--ref or --rl; use --ql for automatic all-versus-all triangle mode"
+        ),
+        (false, true) => anyhow::bail!(
+            "a single -r/--ref genome requires -q/--query or --ql; use --rl for automatic all-versus-all triangle mode"
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn query_list_alone_enables_single_list_mode() -> Result<()> {
+        let list = PathBuf::from("genomes.txt");
+        assert_eq!(
+            resolve_single_list_source(None, Some(&list), None, None)?,
+            Some(SingleListSource::Query)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reference_list_alone_enables_single_list_mode() -> Result<()> {
+        let list = PathBuf::from("genomes.txt");
+        assert_eq!(
+            resolve_single_list_source(None, None, None, Some(&list))?,
+            Some(SingleListSource::Reference)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn two_sided_input_does_not_force_triangle_mode() -> Result<()> {
+        let query_list = PathBuf::from("queries.txt");
+        let ref_list = PathBuf::from("references.txt");
+        assert_eq!(
+            resolve_single_list_source(None, Some(&query_list), None, Some(&ref_list))?,
+            None
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn one_single_genome_still_requires_the_other_side() {
+        let query = PathBuf::from("query.fa");
+        let error = resolve_single_list_source(Some(&query), None, None, None).unwrap_err();
+        assert!(error.to_string().contains("requires -r/--ref or --rl"));
     }
 }

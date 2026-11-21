@@ -51,16 +51,15 @@ On Linux or MacOS (CPU) via bioconda
 ```bash
 conda install -c bioconda -c conda-forge turboani
 ```
-This is how you can run all-versua-all ANI for a list of genomes (gz supprted, one per line):
+This is how you can run all-versus-all ANI for a list of genomes (`.gz` supported, one per line):
 ```bash
 ### obtain some testing genomes first
 wget https://github.com/jianshu93/TurboANI/releases/download/v0.1.8/strep_60_genomes.tar.gz
 tar -xzvf strep_60_genomes.tar.gz
 cd strep_60_genomes
-find . -name "*.fna.gz" > queries.txt
-cp queries.txt references.txt
-### run all-versus-all in list mode
-turboani --ql queries.txt --rl references.txt -o turboani.tsv
+find . -name "*.fna.gz" | sort > genomes.txt
+### one list automatically computes the off-diagonal upper triangle
+turboani --ql genomes.txt -o turboani.tsv
 ```
 
 Testing accuracy with truth:
@@ -138,20 +137,21 @@ Options:
 ```
 
 
-### Many comparsions
-List mode is also supported (one file per line, .gz supported):
+### Many comparisons
+List mode is also supported (one file per line, `.gz` supported). When only
+`--ql` or only `--rl` is supplied, TurboANI reuses that list for both roles and
+automatically computes only pairs with `query_index < reference_index`:
 
 ```bash
 ./target/release/turboani \
-  --ql queries.txt \
-  --rl references.txt \
-  -o turboani.tsv \
+  --ql genomes.txt \
+  -o turboani.tsv
 ```
 
-For an all-versus-all comparison, `--triangle` computes and writes only pairs
-with `query_index < reference_index`. The query and reference lists must contain
-the same genome paths in the same order; self-comparisons and the reciprocal
-lower triangle are omitted:
+The equivalent `--rl genomes.txt` command is also accepted. Self-comparisons
+and reciprocal lower-triangle comparisons are omitted. To request the same
+behavior when both lists are provided explicitly, use `--triangle`; the query
+and reference lists must then contain the same genome paths in the same order:
 
 ```bash
 ./target/release/turboani \
